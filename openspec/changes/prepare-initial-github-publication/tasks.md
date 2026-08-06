@@ -21,5 +21,5 @@
 ## 4. GitHub Publication
 
 - [x] 4.1 Create the GitHub repository under the authenticated owner with the selected name and visibility, configure `origin`, and push `main`
-- [ ] 4.2 Verify `main` tracks `origin/main`, local and remote commit IDs match, and GitHub reports the selected name and visibility
-- [ ] 4.3 Report the repository URL, initial commit ID, verification results, and any intentionally excluded paths
+- [x] 4.2 Verify `main` tracks `origin/main`, local and remote commit IDs match, and GitHub reports the selected name and visibility
+- [x] 4.3 Report the repository URL, initial commit ID, verification results, and any intentionally excluded paths
