@@ -57,6 +57,27 @@ std::vector<ProviderSnapshot> UiFixtureSnapshots() {
           std::move(unavailable)};
 }
 
+std::optional<std::string> DefaultExecutableCommand(ProviderKind kind) {
+  if (kind == ProviderKind::Codex) return "codex";
+  if (kind == ProviderKind::ClaudeSubscription) return "claude";
+  return std::nullopt;
+}
+
+bool MakeDiscoveredExecutableReferencesPortable(Settings& settings) {
+  bool changed = false;
+  for (auto& provider : settings.providers) {
+    const auto command = DefaultExecutableCommand(provider.kind);
+    if (!command.has_value()) continue;
+    const auto portable = MakeExecutableReferencePortable(*command, provider.executable,
+                                                          DiscoverExecutable(*command));
+    if (portable != provider.executable) {
+      provider.executable = portable;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 }  // namespace
 
 bool MonitorApp::OnInit() {
@@ -77,7 +98,11 @@ bool MonitorApp::OnInit() {
   settings_ = loaded.settings;
   wxString fixtureValue;
   const bool fixtureMode = wxGetEnv("AI_USAGE_UI_FIXTURES", &fixtureValue) && fixtureValue == "1";
-  if (!fixtureMode) EnsureDefaults();
+  if (!fixtureMode) {
+    const bool portableReferencesChanged = MakeDiscoveredExecutableReferencesPortable(settings_);
+    EnsureDefaults();
+    if (portableReferencesChanged) SaveSettings(paths_, settings_);
+  }
   http_ = CreatePlatformHttpClient();
   process_ = CreatePlatformProcessRunner();
   secrets_ = CreatePlatformSecretStore();
@@ -152,10 +177,10 @@ bool MonitorApp::OnInit() {
 void MonitorApp::EnsureDefaults() {
   if (!settings_.providers.empty()) return;
   if (const auto codex = DiscoverExecutable("codex"); codex.has_value()) {
-    settings_.providers.push_back(ProviderConfig{"codex", "Codex", ProviderKind::Codex, true, *codex});
+    settings_.providers.push_back(ProviderConfig{"codex", "Codex", ProviderKind::Codex, true, "codex"});
   }
   if (const auto claude = DiscoverExecutable("claude"); claude.has_value()) {
-    settings_.providers.push_back(ProviderConfig{"claude", "Claude", ProviderKind::ClaudeSubscription, true, *claude});
+    settings_.providers.push_back(ProviderConfig{"claude", "Claude", ProviderKind::ClaudeSubscription, true, "claude"});
   }
   ProviderConfig deepSeek;
   deepSeek.id = "deepseek";
@@ -170,15 +195,18 @@ void MonitorApp::EnsureDefaults() {
 void MonitorApp::RebuildProviders() {
   scheduler_->Stop();
   std::vector<std::unique_ptr<IUsageProvider>> providers;
-  for (auto& config : settings_.providers) {
+  for (const auto& config : settings_.providers) {
     if (!config.enabled) continue;
-    if (config.executable.empty() && config.kind == ProviderKind::Codex) {
-      if (const auto found = DiscoverExecutable("codex"); found.has_value()) config.executable = *found;
+    auto runtimeConfig = config;
+    if (const auto command = DefaultExecutableCommand(config.kind); command.has_value()) {
+      if (runtimeConfig.executable.empty()) runtimeConfig.executable = *command;
+      if (!runtimeConfig.executable.has_parent_path()) {
+        if (const auto found = DiscoverExecutable(runtimeConfig.executable.string()); found.has_value()) {
+          runtimeConfig.executable = *found;
+        }
+      }
     }
-    if (config.executable.empty() && config.kind == ProviderKind::ClaudeSubscription) {
-      if (const auto found = DiscoverExecutable("claude"); found.has_value()) config.executable = *found;
-    }
-    providers.push_back(CreateProvider(config, *http_, *process_, *secrets_));
+    providers.push_back(CreateProvider(runtimeConfig, *http_, *process_, *secrets_));
   }
   scheduler_->SetProviders(std::move(providers));
   scheduler_->SetInterval(std::chrono::minutes{settings_.refreshMinutes});

@@ -386,6 +386,16 @@ std::vector<ProviderSnapshot> LoadCacheFile(const std::filesystem::path& path) {
 
 }  // namespace
 
+std::filesystem::path MakeExecutableReferencePortable(
+    const std::string& command, const std::filesystem::path& configured,
+    const std::optional<std::filesystem::path>& discovered) {
+  if (configured.empty() || !discovered.has_value() || discovered->empty()) return configured;
+  std::error_code error;
+  if (std::filesystem::equivalent(configured, *discovered, error)) return std::filesystem::path(command);
+  if (configured.lexically_normal() == discovered->lexically_normal()) return std::filesystem::path(command);
+  return configured;
+}
+
 DataPaths ResolveDataPaths(const std::filesystem::path& executablePath, IFilesystemLocations* locations) {
   DataPaths paths;
   if (const auto overrideRoot = DataDirectoryOverride(); overrideRoot.has_value()) {

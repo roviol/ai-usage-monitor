@@ -485,11 +485,11 @@ void SettingsDialog::OnAdd(wxCommandEvent&) {
   }
   if (selectedKind == ProviderKind::Codex) {
     const auto path = DiscoverExecutable("codex");
-    if (path.has_value()) provider.executable = *path;
+    if (path.has_value()) provider.executable = "codex";
   }
   if (selectedKind == ProviderKind::ClaudeSubscription) {
     const auto path = DiscoverExecutable("claude");
-    if (path.has_value()) provider.executable = *path;
+    if (path.has_value()) provider.executable = "claude";
   }
   working_.providers.push_back(std::move(provider));
   RefreshList(static_cast<int>(working_.providers.size() - 1));

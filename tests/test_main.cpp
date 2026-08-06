@@ -288,6 +288,14 @@ void TestGenericParser() {
 }
 
 void TestSettingsAndCache() {
+  const auto discoveredClaude = std::filesystem::path(R"(C:\Users\example\.local\bin\claude.exe)");
+  CHECK(MakeExecutableReferencePortable("claude", discoveredClaude, discoveredClaude) ==
+        std::filesystem::path("claude"));
+  CHECK(MakeExecutableReferencePortable("claude", "claude", discoveredClaude) ==
+        std::filesystem::path("claude"));
+  CHECK(MakeExecutableReferencePortable("claude", R"(D:\tools\claude-wrapper.exe)", discoveredClaude) ==
+        std::filesystem::path(R"(D:\tools\claude-wrapper.exe)"));
+
   const auto root = std::filesystem::temp_directory_path() / ("ai-usage-test-" + std::to_string(Clock::now().time_since_epoch().count()));
   std::filesystem::create_directories(root);
   const DataPaths paths{root, root / "settings.json", root / "cache.json", true};

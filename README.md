@@ -107,6 +107,8 @@ app-server local y Claude ejecuta únicamente `claude /usage`, con salida
 redirigida, sin stdin, sin pseudo-terminal y sin enviar un prompt al modelo. Un error conserva el último dato bueno como
 obsoleto. El scheduler no sondea entre vencimientos, agrupa solicitudes repetidas
 y aplica backoff acotado; “Refrescar” realiza un intento inmediato.
+Las ubicaciones detectadas de los clientes estándar no se persisten: la configuración
+guarda solamente `codex` o `claude` y resuelve su ruta mediante `PATH` al ejecutarlos.
 
 ## Licencia
 

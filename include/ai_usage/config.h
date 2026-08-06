@@ -66,6 +66,9 @@ struct LoadSettingsResult {
 };
 
 DataPaths ResolveDataPaths(const std::filesystem::path& executablePath, IFilesystemLocations* locations = nullptr);
+std::filesystem::path MakeExecutableReferencePortable(
+    const std::string& command, const std::filesystem::path& configured,
+    const std::optional<std::filesystem::path>& discovered);
 LoadSettingsResult LoadSettings(const DataPaths& paths);
 void SaveSettings(const DataPaths& paths, const Settings& settings);
 std::vector<ProviderSnapshot> LoadCache(const DataPaths& paths);
