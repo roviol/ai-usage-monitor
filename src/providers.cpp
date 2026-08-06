@@ -1,0 +1,533 @@
+#include "ai_usage/providers.h"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <ctime>
+#include <iomanip>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <stdexcept>
+#include <string_view>
+
+namespace ai_usage {
+namespace {
+
+using Json = nlohmann::json;
+
+std::string NumberText(const Json& value) {
+  if (value.is_string()) {
+    const auto text = value.get<std::string>();
+    if (!IsDecimal(text)) throw std::runtime_error("expected decimal string");
+    return text;
+  }
+  if (value.is_number_integer()) return std::to_string(value.get<std::int64_t>());
+  if (value.is_number_unsigned()) return std::to_string(value.get<std::uint64_t>());
+  if (value.is_number_float()) {
+    const auto number = value.get<long double>();
+    if (!std::isfinite(number)) throw std::runtime_error("non-finite numeric value");
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(6) << number;
+    auto text = output.str();
+    while (!text.empty() && text.back() == '0') text.pop_back();
+    if (!text.empty() && text.back() == '.') text.pop_back();
+    return text.empty() ? "0" : text;
+  }
+  throw std::runtime_error("expected numeric value");
+}
+
+std::string DecimalSubtract(const std::string& left, const std::string& right) {
+  return SubtractDecimals(left, right);
+}
+
+ProviderSnapshot BaseSnapshot(const ProviderConfig& config, TimePoint observedAt) {
+  ProviderSnapshot snapshot;
+  snapshot.providerId = config.id;
+  snapshot.displayName = config.name;
+  snapshot.kind = config.kind;
+  snapshot.observedAt = observedAt;
+  snapshot.freshness = Freshness::Fresh;
+  snapshot.health = Health::Healthy;
+  return snapshot;
+}
+
+Metric Unsupported(MetricKind kind, MetricUnit unit, MetricScope scope, std::string label) {
+  return Metric{kind, "", unit, scope, Provenance::ProviderReported, Availability::Unsupported, std::nullopt, std::nullopt,
+                std::move(label)};
+}
+
+std::string JoinUrl(std::string base, std::string path) {
+  if (path.size() > 2048U || path.find("://") != std::string::npos) {
+    throw std::runtime_error("provider route must be a bounded same-origin path");
+  }
+  while (!base.empty() && base.back() == '/') base.pop_back();
+  if (path.empty() || path.front() != '/') path.insert(path.begin(), '/');
+  return base + path;
+}
+
+std::optional<std::chrono::seconds> ParseRetryAfter(const HttpResponse& response) {
+  for (const auto& [name, value] : response.headers) {
+    std::string lowered = name;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    if (lowered == "retry-after") {
+      try {
+        const auto seconds = std::stoll(value);
+        if (seconds > 0) return std::chrono::seconds{seconds};
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+std::tm LocalTime(TimePoint value) {
+  const auto raw = Clock::to_time_t(value);
+  std::tm result{};
+#ifdef _WIN32
+  if (localtime_s(&result, &raw) != 0) throw std::runtime_error("cannot convert local time");
+#else
+  if (localtime_r(&raw, &result) == nullptr) throw std::runtime_error("cannot convert local time");
+#endif
+  return result;
+}
+
+std::optional<int> MonthIndex(std::string month) {
+  static const std::array<std::string_view, 12> months{
+      "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"};
+  std::transform(month.begin(), month.end(), month.begin(),
+                 [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+  const auto found = std::find(months.begin(), months.end(), month);
+  if (found == months.end()) return std::nullopt;
+  return static_cast<int>(std::distance(months.begin(), found));
+}
+
+std::optional<TimePoint> ParseClaudeReset(const std::string& line, TimePoint observedAt) {
+  static const std::regex reset(
+      R"(\b(?:resets|reinicia)\s+([A-Za-z]{3})\s+([0-9]{1,2}),?\s+([0-9]{1,2})(?::([0-9]{2}))?\s*(am|pm)\b)",
+      std::regex::icase);
+  std::smatch match;
+  if (!std::regex_search(line, match, reset)) return std::nullopt;
+  const auto month = MonthIndex(match[1].str());
+  if (!month.has_value()) return std::nullopt;
+  const int day = std::stoi(match[2].str());
+  int hour = std::stoi(match[3].str());
+  const int minute = match[4].matched ? std::stoi(match[4].str()) : 0;
+  std::string meridiem = match[5].str();
+  std::transform(meridiem.begin(), meridiem.end(), meridiem.begin(),
+                 [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+  if (day < 1 || day > 31 || hour < 1 || hour > 12 || minute < 0 || minute > 59) return std::nullopt;
+  if (hour == 12) hour = 0;
+  if (meridiem == "pm") hour += 12;
+
+  auto candidate = LocalTime(observedAt);
+  candidate.tm_mon = *month;
+  candidate.tm_mday = day;
+  candidate.tm_hour = hour;
+  candidate.tm_min = minute;
+  candidate.tm_sec = 0;
+  candidate.tm_isdst = -1;
+  auto raw = std::mktime(&candidate);
+  if (raw == static_cast<std::time_t>(-1)) return std::nullopt;
+  auto result = Clock::from_time_t(raw);
+  if (result < observedAt) {
+    ++candidate.tm_year;
+    candidate.tm_isdst = -1;
+    raw = std::mktime(&candidate);
+    if (raw == static_cast<std::time_t>(-1)) return std::nullopt;
+    result = Clock::from_time_t(raw);
+  }
+  const auto normalized = LocalTime(result);
+  if (normalized.tm_mon != *month || normalized.tm_mday != day || normalized.tm_hour != hour ||
+      normalized.tm_min != minute) {
+    return std::nullopt;
+  }
+  return result;
+}
+
+void RequireHttpSuccess(const HttpResponse& response) {
+  if (response.status >= 200 && response.status < 300) return;
+  if (response.status == 401 || response.status == 403) {
+    throw ProviderException(ProviderError{"unauthorized", "authentication rejected", false, std::nullopt});
+  }
+  if (response.status == 429) {
+    throw ProviderException(ProviderError{"rate-limited", "rate limited", true, ParseRetryAfter(response)});
+  }
+  const bool transient = response.status >= 500;
+  throw ProviderException(ProviderError{"http-" + std::to_string(response.status),
+                                        "HTTP request failed with status " + std::to_string(response.status),
+                                        transient, std::nullopt});
+}
+
+std::string ApiKey(const ProviderConfig& config, ISecretStore& secrets) {
+  if (config.encryptedApiKey.empty()) return {};
+  return secrets.Unprotect(config.encryptedApiKey);
+}
+
+std::string PlainTerminalText(const std::string& terminal) {
+  std::string plain;
+  for (std::size_t index = 0; index < terminal.size();) {
+    const unsigned char character = static_cast<unsigned char>(terminal[index]);
+    if (character == 0x1BU) {
+      ++index;
+      if (index < terminal.size() && terminal[index] == '[') {
+        ++index;
+        while (index < terminal.size()) {
+          const unsigned char marker = static_cast<unsigned char>(terminal[index++]);
+          if (marker >= 0x40U && marker <= 0x7EU) break;
+        }
+      } else if (index < terminal.size() && terminal[index] == ']') {
+        ++index;
+        while (index < terminal.size()) {
+          if (terminal[index] == '\a') { ++index; break; }
+          if (terminal[index] == '\x1b' && index + 1U < terminal.size() && terminal[index + 1U] == '\\') {
+            index += 2U;
+            break;
+          }
+          ++index;
+        }
+      } else if (index < terminal.size()) {
+        ++index;
+      }
+      continue;
+    }
+    if (character == '\b') {
+      if (!plain.empty()) plain.pop_back();
+      ++index;
+      continue;
+    }
+    if (character == '\r') {
+      plain.push_back('\n');
+      ++index;
+      continue;
+    }
+    if (character < 0x20U && character != '\n' && character != '\t') {
+      ++index;
+      continue;
+    }
+    plain.push_back(terminal[index++]);
+  }
+  return plain;
+}
+
+class ProviderBase : public IUsageProvider {
+ public:
+  ProviderBase(ProviderConfig config, IHttpClient& http, IProcessRunner& process, ISecretStore& secrets)
+      : config_(std::move(config)), http_(http), process_(process), secrets_(secrets) {}
+  const ProviderConfig& Config() const override { return config_; }
+  void Cancel() override { cancelled_ = true; }
+
+ protected:
+  void BeginRefresh() { cancelled_ = false; }
+  std::function<bool()> CancellationProbe() { return [this] { return cancelled_.load(); }; }
+  ProviderConfig config_;
+  IHttpClient& http_;
+  IProcessRunner& process_;
+  ISecretStore& secrets_;
+  std::atomic<bool> cancelled_{false};
+};
+
+class CodexProvider final : public ProviderBase {
+ public:
+  using ProviderBase::ProviderBase;
+  ProviderCapabilities Capabilities() const override { return {true, true, false, true, "Codex app-server"}; }
+  ConnectionTestResult TestConnection() override {
+    const auto version = ProbeVersion(process_, config_.executable);
+    return {!version.empty(), Capabilities(), version.empty() ? "No se pudo ejecutar Codex" : version};
+  }
+  ProviderSnapshot Refresh() override {
+    BeginRefresh();
+    const std::string requests =
+        "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"ai-usage-monitor\",\"title\":\"AI Usage Monitor\",\"version\":\"0.1.0\"},\"capabilities\":{}}}\n"
+        "{\"method\":\"initialized\",\"params\":{}}\n"
+        "{\"method\":\"account/read\",\"id\":2,\"params\":{\"refreshToken\":false}}\n"
+        "{\"method\":\"account/rateLimits/read\",\"id\":3}\n"
+        "{\"method\":\"account/usage/read\",\"id\":4}\n";
+    const auto result = process_.Run(ProcessRequest{config_.executable, {"app-server", "--listen", "stdio://"}, requests,
+                                                     std::chrono::milliseconds{10000}, CancellationProbe(),
+                                                     std::chrono::milliseconds{3000}});
+    if (result.timedOut) throw std::runtime_error("Codex app-server timed out");
+    if (result.standardOutput.empty()) throw std::runtime_error("Codex app-server returned no JSONL");
+    return ParseCodexResponses(config_, result.standardOutput, Clock::now());
+  }
+};
+
+class DeepSeekProvider final : public ProviderBase {
+ public:
+  using ProviderBase::ProviderBase;
+  ProviderCapabilities Capabilities() const override { return {false, false, true, false, "DeepSeek /user/balance"}; }
+  ConnectionTestResult TestConnection() override {
+    try {
+      const auto snapshot = Refresh();
+      return {snapshot.health != Health::Error, Capabilities(), "Saldo DeepSeek disponible"};
+    } catch (const std::exception& error) {
+      return {false, Capabilities(), error.what()};
+    }
+  }
+  ProviderSnapshot Refresh() override {
+    BeginRefresh();
+    const auto key = ApiKey(config_, secrets_);
+    if (key.empty()) throw std::runtime_error("DeepSeek API key is required");
+    const auto base = config_.baseUrl.empty() ? "https://api.deepseek.com" : config_.baseUrl;
+    HttpRequest request;
+    request.url = JoinUrl(base, config_.balancePath.empty() ? "/user/balance" : config_.balancePath);
+    request.headers["Authorization"] = "Bearer " + key;
+    request.headers["Accept"] = "application/json";
+    request.allowLoopbackHttp = config_.allowLoopbackHttp;
+    const auto response = http_.Send(request);
+    RequireHttpSuccess(response);
+    return ParseDeepSeekBalance(config_, response.body, Clock::now());
+  }
+};
+
+class GenericProvider final : public ProviderBase {
+ public:
+  using ProviderBase::ProviderBase;
+  ProviderCapabilities Capabilities() const override {
+    return {!config_.usagePath.empty(), config_.jsonPointers.contains("remaining_percent"), !config_.balancePath.empty(),
+            config_.jsonPointers.contains("total_tokens"), "Mappings explícitos"};
+  }
+  ConnectionTestResult TestConnection() override {
+    try {
+      const auto key = ApiKey(config_, secrets_);
+      HttpRequest request;
+      request.url = JoinUrl(config_.baseUrl, "/models");
+      if (!key.empty()) request.headers["Authorization"] = "Bearer " + key;
+      request.allowLoopbackHttp = config_.allowLoopbackHttp;
+      const auto response = http_.Send(request);
+      RequireHttpSuccess(response);
+      return {true, Capabilities(), "Endpoint compatible accesible"};
+    } catch (const std::exception& error) {
+      return {false, Capabilities(), error.what()};
+    }
+  }
+  ProviderSnapshot Refresh() override {
+    BeginRefresh();
+    auto snapshot = BaseSnapshot(config_, Clock::now());
+    const auto key = ApiKey(config_, secrets_);
+    const std::string path = !config_.usagePath.empty() ? config_.usagePath : config_.balancePath;
+    if (path.empty()) {
+      const auto test = TestConnection();
+      if (!test.success) throw std::runtime_error(test.message);
+      snapshot.health = Health::Partial;
+      snapshot.metrics.push_back(Unsupported(MetricKind::Balance, MetricUnit::Unknown, MetricScope::CurrentBalance, "Saldo"));
+      snapshot.metrics.push_back(Unsupported(MetricKind::TotalTokens, MetricUnit::Tokens, MetricScope::BillingPeriod, "Uso"));
+      return snapshot;
+    }
+    HttpRequest request;
+    request.url = JoinUrl(config_.baseUrl, path);
+    if (!key.empty()) request.headers["Authorization"] = "Bearer " + key;
+    request.allowLoopbackHttp = config_.allowLoopbackHttp;
+    const auto response = http_.Send(request);
+    RequireHttpSuccess(response);
+    snapshot.metrics = ParseGenericMetrics(config_, response.body);
+    snapshot.health = snapshot.metrics.empty() ? Health::Partial : Health::Healthy;
+    return snapshot;
+  }
+};
+
+class ClaudeSubscriptionProvider final : public ProviderBase {
+ public:
+  using ProviderBase::ProviderBase;
+  ProviderCapabilities Capabilities() const override {
+    return {true, true, false, false, "claude /usage local no interactivo"};
+  }
+  ConnectionTestResult TestConnection() override {
+    try {
+      const auto snapshot = Refresh();
+      return {snapshot.health == Health::Healthy, Capabilities(), "claude /usage disponible"};
+    } catch (const std::exception& error) {
+      return {false, Capabilities(), error.what()};
+    }
+  }
+  ProviderSnapshot Refresh() override {
+    BeginRefresh();
+    if (config_.executable.empty()) throw std::runtime_error("Claude executable unavailable");
+    const auto result = process_.Run(ProcessRequest{config_.executable, {"/usage"}, {},
+                                                     std::chrono::milliseconds{10000}, CancellationProbe()});
+    if (result.cancelled) throw std::runtime_error("claude /usage cancelled");
+    if (result.timedOut) throw std::runtime_error("claude /usage timed out");
+    if (result.exitCode != 0) throw std::runtime_error("claude /usage failed: " + result.standardError);
+    const auto parsed = ParseClaudeUsageText(config_, result.standardOutput, Clock::now());
+    if (!parsed.has_value()) throw std::runtime_error("claude /usage output schema is unsupported");
+    return *parsed;
+  }
+};
+
+void AddCodexWindow(std::vector<Metric>& metrics, const Json& window, const std::string& label) {
+  if (!window.is_object() || !window.contains("usedPercent")) return;
+  const auto used = NumberText(window["usedPercent"]);
+  std::optional<TimePoint> reset;
+  std::optional<std::chrono::seconds> duration;
+  if (window.contains("resetsAt") && window["resetsAt"].is_number_integer()) {
+    reset = TimePoint{std::chrono::seconds{window["resetsAt"].get<std::int64_t>()}};
+  }
+  if (window.contains("windowDurationMins") && window["windowDurationMins"].is_number_integer()) {
+    duration = std::chrono::minutes{window["windowDurationMins"].get<std::int64_t>()};
+  }
+  metrics.push_back(Metric{MetricKind::UsedPercent, used, MetricUnit::Percent, MetricScope::RollingWindow,
+                           Provenance::ProviderReported, Availability::Available, reset, duration, label + " usado"});
+  metrics.push_back(Metric{MetricKind::RemainingPercent, DecimalSubtract("100", used), MetricUnit::Percent,
+                           MetricScope::RollingWindow, Provenance::Derived, Availability::Available, reset, duration,
+                           label + " restante"});
+}
+
+}  // namespace
+
+ProviderSnapshot ParseCodexResponses(const ProviderConfig& config, const std::string& jsonLines, TimePoint observedAt) {
+  auto snapshot = BaseSnapshot(config, observedAt);
+  std::istringstream lines(jsonLines);
+  std::string line;
+  bool accountSeen = false;
+  bool limitsSeen = false;
+  while (std::getline(lines, line)) {
+    if (line.empty()) continue;
+    Json message;
+    try { message = Json::parse(line); }
+    catch (...) { throw std::runtime_error("Codex app-server returned malformed JSONL"); }
+    if (!message.contains("id") || !message["id"].is_number_integer()) continue;
+    const int id = message["id"].get<int>();
+    if (message.contains("error")) {
+      snapshot.health = Health::Error;
+      snapshot.error = ProviderError{"codex-protocol", message["error"].dump(), false, std::nullopt};
+      continue;
+    }
+    if (!message.contains("result")) continue;
+    const auto& result = message["result"];
+    if (id == 2) {
+      accountSeen = true;
+      if (!result.contains("account") || result["account"].is_null()) {
+        snapshot.health = Health::Error;
+        snapshot.error = ProviderError{"unauthorized", "Codex no tiene una cuenta autenticada", false, std::nullopt};
+      } else {
+        const auto& account = result["account"];
+        if (account.contains("email") && account["email"].is_string()) snapshot.accountLabel = account["email"].get<std::string>();
+        if (snapshot.accountLabel.empty() && account.contains("type")) snapshot.accountLabel = account["type"].get<std::string>();
+      }
+    } else if (id == 3) {
+      limitsSeen = true;
+      const Json* buckets = nullptr;
+      if (result.contains("rateLimitsByLimitId") && result["rateLimitsByLimitId"].is_object()) buckets = &result["rateLimitsByLimitId"];
+      if (buckets != nullptr) {
+        for (const auto& [bucketId, bucket] : buckets->items()) {
+          std::string label = bucketId == "codex" ? "Codex" : bucketId;
+          if (bucket.contains("limitName") && bucket["limitName"].is_string()) {
+            const auto reportedLabel = bucket["limitName"].get<std::string>();
+            if (!reportedLabel.empty()) label = reportedLabel;
+          }
+          if (bucket.contains("primary")) AddCodexWindow(snapshot.metrics, bucket["primary"], label + " principal");
+          if (bucket.contains("secondary") && !bucket["secondary"].is_null()) AddCodexWindow(snapshot.metrics, bucket["secondary"], label + " secundaria");
+        }
+      } else if (result.contains("rateLimits")) {
+        const auto& bucket = result["rateLimits"];
+        if (bucket.contains("primary")) AddCodexWindow(snapshot.metrics, bucket["primary"], "Codex principal");
+        if (bucket.contains("secondary") && !bucket["secondary"].is_null()) AddCodexWindow(snapshot.metrics, bucket["secondary"], "Codex secundaria");
+      }
+    } else if (id == 4 && result.contains("summary") && result["summary"].is_object()) {
+      const auto& summary = result["summary"];
+      if (summary.contains("lifetimeTokens") && !summary["lifetimeTokens"].is_null()) {
+        snapshot.metrics.push_back(Metric{MetricKind::TotalTokens, NumberText(summary["lifetimeTokens"]), MetricUnit::Tokens,
+                                          MetricScope::Lifetime, Provenance::ProviderReported, Availability::Available,
+                                          std::nullopt, std::nullopt, "Tokens acumulados"});
+      }
+    }
+  }
+  if (!accountSeen) throw std::runtime_error("Codex account response was not received");
+  if (!limitsSeen && snapshot.health != Health::Error) snapshot.health = Health::Partial;
+  if (snapshot.metrics.empty() && snapshot.health == Health::Healthy) snapshot.health = Health::Partial;
+  return snapshot;
+}
+
+ProviderSnapshot ParseDeepSeekBalance(const ProviderConfig& config, const std::string& json, TimePoint observedAt) {
+  auto snapshot = BaseSnapshot(config, observedAt);
+  const auto root = Json::parse(json);
+  if (!root.contains("is_available") || !root["is_available"].is_boolean()) throw std::runtime_error("DeepSeek schema: is_available missing");
+  if (!root.contains("balance_infos") || !root["balance_infos"].is_array()) throw std::runtime_error("DeepSeek schema: balance_infos missing");
+  for (const auto& balance : root["balance_infos"]) {
+    const auto currency = balance.at("currency").get<std::string>();
+    const auto value = NumberText(balance.at("total_balance"));
+    const auto unit = currency == "USD" ? MetricUnit::USD : currency == "CNY" ? MetricUnit::CNY : MetricUnit::Unknown;
+    snapshot.metrics.push_back(Metric{MetricKind::Balance, value, unit, MetricScope::CurrentBalance,
+                                      Provenance::ProviderReported, Availability::Available, std::nullopt, std::nullopt,
+                                      "Saldo " + currency});
+    if (config.budget.has_value() && unit != MetricUnit::Unknown) {
+      snapshot.metrics.push_back(Metric{MetricKind::Spent, DecimalSubtract(*config.budget, value), unit,
+                                        MetricScope::BillingPeriod, Provenance::Derived, Availability::Available,
+                                        std::nullopt, std::nullopt, "Consumido derivado " + currency});
+    }
+  }
+  if (!root["is_available"].get<bool>()) {
+    snapshot.health = Health::Partial;
+    snapshot.error = ProviderError{"balance-unavailable", "DeepSeek reporta saldo no disponible", false, std::nullopt};
+  }
+  snapshot.metrics.push_back(Unsupported(MetricKind::TotalTokens, MetricUnit::Tokens, MetricScope::BillingPeriod, "Tokens usados"));
+  return snapshot;
+}
+
+std::vector<Metric> ParseGenericMetrics(const ProviderConfig& config, const std::string& json) {
+  const auto root = Json::parse(json);
+  std::vector<Metric> metrics;
+  const auto add = [&](const std::string& key, MetricKind kind, MetricUnit unit, MetricScope scope, const std::string& label) {
+    const auto found = config.jsonPointers.find(key);
+    if (found == config.jsonPointers.end() || found->second.empty()) return;
+    const Json::json_pointer pointer(found->second);
+    if (!root.contains(pointer)) throw std::runtime_error("JSON Pointer missing for " + key);
+    metrics.push_back(Metric{kind, NumberText(root.at(pointer)), unit, scope, Provenance::ProviderReported,
+                             Availability::Available, std::nullopt, std::nullopt, label});
+  };
+  add("used_percent", MetricKind::UsedPercent, MetricUnit::Percent, MetricScope::BillingPeriod, "Uso");
+  add("remaining_percent", MetricKind::RemainingPercent, MetricUnit::Percent, MetricScope::BillingPeriod, "Restante");
+  add("total_tokens", MetricKind::TotalTokens, MetricUnit::Tokens, MetricScope::BillingPeriod, "Tokens");
+  add("balance_usd", MetricKind::Balance, MetricUnit::USD, MetricScope::CurrentBalance, "Saldo USD");
+  add("balance_cny", MetricKind::Balance, MetricUnit::CNY, MetricScope::CurrentBalance, "Saldo CNY");
+  add("spent_usd", MetricKind::Spent, MetricUnit::USD, MetricScope::BillingPeriod, "Consumido USD");
+  return metrics;
+}
+
+std::optional<ProviderSnapshot> ParseClaudeUsageText(
+    const ProviderConfig& config, const std::string& output, TimePoint observedAt) {
+  static const std::regex percentage(
+      R"((Current session|Current week(?: \(all models\))?)[^0-9\n]{0,40}([0-9]{1,3})%[^\n]*(?:used|usado)[^\n]*)",
+      std::regex::icase);
+  const auto plain = PlainTerminalText(output);
+  auto snapshot = BaseSnapshot(config, observedAt);
+  for (std::sregex_iterator match(plain.begin(), plain.end(), percentage), end; match != end; ++match) {
+    const auto used = (*match)[2].str();
+    if (std::stoll(used) > 100) return std::nullopt;
+    const auto period = (*match)[1].str();
+    const bool weekly = period.find("week") != std::string::npos || period.find("Week") != std::string::npos;
+    const std::string label = weekly ? "Claude semana" : "Claude sesión";
+    const auto reset = ParseClaudeReset((*match)[0].str(), observedAt);
+    snapshot.metrics.push_back(Metric{MetricKind::UsedPercent, used, MetricUnit::Percent, MetricScope::RollingWindow,
+                                      Provenance::CliBridge, Availability::Available, reset, std::nullopt,
+                                      label + " usado"});
+    snapshot.metrics.push_back(Metric{MetricKind::RemainingPercent, DecimalSubtract("100", used), MetricUnit::Percent,
+                                      MetricScope::RollingWindow, Provenance::Derived, Availability::Available,
+                                      reset, std::nullopt, label + " restante"});
+  }
+  if (snapshot.metrics.empty()) return std::nullopt;
+  return snapshot;
+}
+
+std::unique_ptr<IUsageProvider> CreateProvider(
+    ProviderConfig config, IHttpClient& http, IProcessRunner& process, ISecretStore& secrets) {
+  switch (config.kind) {
+    case ProviderKind::Codex:
+      return std::make_unique<CodexProvider>(std::move(config), http, process, secrets);
+    case ProviderKind::ClaudeSubscription:
+      return std::make_unique<ClaudeSubscriptionProvider>(std::move(config), http, process, secrets);
+    case ProviderKind::DeepSeek:
+      return std::make_unique<DeepSeekProvider>(std::move(config), http, process, secrets);
+    case ProviderKind::OpenAiCompatible:
+      return std::make_unique<GenericProvider>(std::move(config), http, process, secrets);
+  }
+  throw std::runtime_error("unsupported provider kind");
+}
+
+}  // namespace ai_usage

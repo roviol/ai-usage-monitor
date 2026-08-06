@@ -1,0 +1,7 @@
+/* Embedded status icons are generated in src/ui/tray_icon.cpp from these palettes.
+   Keeping the palette in a text asset makes the release deterministic and avoids
+   a runtime image decoder. */
+healthy=#2E7D32
+partial=#F9A825
+error=#C62828
+nodata=#607D8B

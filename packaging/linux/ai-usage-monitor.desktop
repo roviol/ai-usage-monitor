@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AI Usage Monitor
+Comment=Monitor AI provider usage from the system tray
+Exec=ai-usage-monitor
+Icon=ai-usage-monitor
+Categories=Utility;Monitor;
+Terminal=false

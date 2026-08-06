@@ -1,0 +1,12 @@
+/build/
+/.deps/
+/dist/
+/data/
+/.tools/
+/CMakeUserPresets.json
+/compile_commands.json
+*.user
+*.suo
+.vs/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: lukka/get-cmake@latest
+      - name: Configure
+        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_BASE_DIR=${{ github.workspace }}/.deps
+      - name: Build
+        run: cmake --build build/ci --parallel 4
+      - name: Test
+        run: ctest --test-dir build/ci --output-on-failure
+      - name: Package
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -BuildDirectory build/ci
+      - name: Enforce Windows release gates
+        shell: pwsh
+        run: ./scripts/measure-windows.ps1 -Executable build/ci/ai-usage-monitor.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIUsageMonitor-Windows-x64
+          path: dist/*.zip*
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libgtk-3-dev libcurl4-openssl-dev libsecret-tools xvfb
+      - name: Configure
+        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_BASE_DIR=${{ github.workspace }}/.deps
+      - name: Build
+        run: cmake --build build/ci --parallel 4
+      - name: Test
+        run: ctest --test-dir build/ci --output-on-failure
+      - name: Fetch verified AppImage tooling
+        shell: bash
+        run: |
+          mkdir -p .tools
+          curl --fail --location --retry 3 --output .tools/linuxdeploy-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          echo "421ca71d5c69ea97c6309276232990d43df1dcece0edfaa26bbf926ff96ed12e  .tools/linuxdeploy-x86_64.AppImage" | sha256sum --check
+          curl --fail --location --retry 3 --output .tools/appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  .tools/appimagetool-x86_64.AppImage" | sha256sum --check
+          chmod +x .tools/*.AppImage
+      - name: Build AppImage
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          LINUXDEPLOY: ${{ github.workspace }}/.tools/linuxdeploy-x86_64.AppImage
+          APPIMAGETOOL: ${{ github.workspace }}/.tools/appimagetool-x86_64.AppImage
+        run: ./packaging/linux/build-appimage.sh build/ci dist
+      - name: Enforce Linux release gates and GUI smoke test
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: xvfb-run -a ./scripts/measure-linux.sh dist/AIUsageMonitor-0.1.0-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIUsageMonitor-Linux-x86_64
+          path: dist/*.AppImage*
