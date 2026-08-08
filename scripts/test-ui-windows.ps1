@@ -27,6 +27,7 @@ public static class AiUsageNativeUi {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr word, IntPtr data);
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr word, IntPtr data);
+  [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr word, IntPtr data, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr word, StringBuilder data);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr word, string data);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
@@ -133,6 +134,22 @@ function Assert-Within([IntPtr]$Child, [AiUsageNativeUi+Rect]$ParentRect, [strin
   Assert-True ($rect.Top -ge $ParentRect.Top -and $rect.Bottom -le $ParentRect.Bottom) "$Name queda recortado verticalmente"
 }
 
+function Assert-StableWindowTitles([uint32]$ProcessId) {
+  $titles = @()
+  foreach ($window in [AiUsageNativeUi]::TopLevelFor($ProcessId)) {
+    $title = [AiUsageNativeUi]::Text($window)
+    if (-not [string]::IsNullOrWhiteSpace($title)) { $titles += $title }
+  }
+  Assert-True ($titles.Count -gt 0) 'La aplicacion no expuso ningun titulo nativo identificable.'
+  foreach ($marker in @('Codex', 'Claude', 'DeepSeek', 'cuenta@example.com', '28%', '54%', '72%',
+                         '42.50', 'reinicia', 'Actualizando cuotas')) {
+    foreach ($title in $titles) {
+      Assert-True (-not $title.Contains($marker)) "El titulo nativo '$title' expuso el dato dinamico '$marker'."
+    }
+  }
+  return $titles
+}
+
 $process = $null
 try {
   $refreshLabel = "$([char]0x21BB)  Refrescar todo"
@@ -156,12 +173,13 @@ try {
     if ($process.HasExited -or $process.MainWindowHandle -ne 0) { break }
   }
   Assert-True (-not $process.HasExited -and $process.MainWindowHandle -ne 0) 'El dashboard no inicio.'
+  $dashboardWindow = $process.MainWindowHandle
 
-  [AiUsageNativeUi]::SetWindowPos($process.MainWindowHandle, [IntPtr]::Zero, 80, 60, 460, 700, 0x40) | Out-Null
+  [AiUsageNativeUi]::SetWindowPos($dashboardWindow, [IntPtr]::Zero, 80, 60, 460, 700, 0x40) | Out-Null
   Start-Sleep -Milliseconds 700
   $dashboardRect = New-Object AiUsageNativeUi+Rect
-  [AiUsageNativeUi]::GetWindowRect($process.MainWindowHandle, [ref]$dashboardRect) | Out-Null
-  $dashboard = Get-ChildrenByText $process.MainWindowHandle
+  [AiUsageNativeUi]::GetWindowRect($dashboardWindow, [ref]$dashboardRect) | Out-Null
+  $dashboard = Get-ChildrenByText $dashboardWindow
   foreach ($label in @($refreshLabel, $configurationLabel, 'Siempre visible', 'Codex', '28%',
                         'Ventana semanal', $claudeSessionLabel)) {
     Assert-True $dashboard.ContainsKey($label) "Falta el control o texto '$label' en el dashboard."
@@ -172,11 +190,17 @@ try {
 
   $overlay = [IntPtr]::Zero
   foreach ($window in [AiUsageNativeUi]::TopLevelFor([uint32]$process.Id)) {
-    if ([AiUsageNativeUi]::Text($window) -like 'AI Usage Overlay*') { $overlay = $window }
+    $candidateStyle = [AiUsageNativeUi]::ExtendedStyle($window)
+    if ([AiUsageNativeUi]::Text($window) -eq 'AI Usage Monitor' -and
+        ($candidateStyle -band 0x80) -ne 0 -and ($candidateStyle -band 0x08000000) -ne 0) {
+      $overlay = $window
+    }
   }
   Assert-True ($overlay -ne [IntPtr]::Zero -and [AiUsageNativeUi]::IsWindowVisible($overlay)) 'El overlay no apareció.'
   $overlayText = [AiUsageNativeUi]::Text($overlay)
-  Assert-True ($overlayText -like '*Codex*' -and $overlayText -like '*reinicia*') 'El overlay no expuso métricas y reinicios.'
+  Assert-True ($overlayText -eq 'AI Usage Monitor') "Titulo nativo inesperado para el overlay: '$overlayText'."
+  $initialTitles = @(Assert-StableWindowTitles ([uint32]$process.Id))
+  Assert-True ($initialTitles -contains 'AI Usage Monitor') 'No se encontro el titulo conciso de la aplicacion.'
   $liveSettings = Get-Content -LiteralPath (Join-Path $env:AI_USAGE_DATA_DIR 'settings.json') -Raw | ConvertFrom-Json
   Assert-True ($liveSettings.overlay.suppressFullscreen) 'La supresión de pantalla completa no quedó activa en el fixture.'
   $style = [AiUsageNativeUi]::ExtendedStyle($overlay)
@@ -253,6 +277,8 @@ try {
   [AiUsageNativeUi]::PostMessage($dashboard[$refreshLabel], 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
   Start-Sleep -Milliseconds 200
   Assert-True ([AiUsageNativeUi]::GetForegroundWindow() -eq $foregroundBeforeRefresh) 'Actualizar snapshots hizo que el overlay robara el foco.'
+  $updatedTitles = @(Assert-StableWindowTitles ([uint32]$process.Id))
+  Assert-True ($updatedTitles -contains 'AI Usage Monitor') 'El titulo conciso cambio despues de actualizar snapshots.'
   [AiUsageNativeUi]::PostMessage($dashboard['Siempre visible'], 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
   [AiUsageNativeUi]::PostMessage($dashboard[$configurationLabel], 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
   Start-Sleep -Seconds 1
@@ -307,7 +333,42 @@ try {
   Assert-True ($savedSettings.overlay.visible -and $savedSettings.overlay.opacity -eq 78 -and
                $savedSettings.overlay.suppressFullscreen) 'Las preferencias del overlay no se conservaron correctamente.'
 
-  Write-Output 'Windows UI smoke test passed: overlay data, opacity, click-through, no-activate, hotkey, fullscreen, settings and persistence.'
+  $queryResult = [IntPtr]::Zero
+  $querySent = [AiUsageNativeUi]::SendMessageTimeout($dashboardWindow, 0x0011, [IntPtr]::Zero, [IntPtr]::Zero,
+                                                     0x0002, 2000, [ref]$queryResult)
+  Assert-True ($querySent -ne [IntPtr]::Zero) 'La consulta de fin de sesion no respondio dentro del limite.'
+  Assert-True ($queryResult -ne [IntPtr]::Zero) 'La aplicacion veto la consulta de fin de sesion de Windows.'
+  Start-Sleep -Milliseconds 200
+  $process.Refresh()
+  Assert-True (-not $process.HasExited) 'La fase consultiva termino la aplicacion antes de la confirmacion de Windows.'
+  Assert-StableWindowTitles ([uint32]$process.Id) | Out-Null
+
+  $cancelResult = [IntPtr]::Zero
+  $cancelSent = [AiUsageNativeUi]::SendMessageTimeout($dashboardWindow, 0x0016, [IntPtr]::Zero, [IntPtr]::Zero,
+                                                      0x0002, 2000, [ref]$cancelResult)
+  Assert-True ($cancelSent -ne [IntPtr]::Zero) 'No se pudo simular la cancelacion del fin de sesion.'
+  [AiUsageNativeUi]::PostMessage($dashboard[$refreshLabel], 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+  Start-Sleep -Milliseconds 200
+  $process.Refresh()
+  Assert-True (-not $process.HasExited) 'La aplicacion no continuo operativa tras cancelar el fin de sesion.'
+
+  [AiUsageNativeUi]::PostMessage($dashboardWindow, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+  Start-Sleep -Milliseconds 200
+  $process.Refresh()
+  Assert-True (-not $process.HasExited) 'Cerrar normalmente el dashboard termino la aplicacion residente.'
+  Assert-True (-not [AiUsageNativeUi]::IsWindowVisible($dashboardWindow)) 'Cerrar normalmente el dashboard no lo oculto.'
+  [AiUsageNativeUi]::ForceForeground($dashboardWindow) | Out-Null
+  Assert-True ([AiUsageNativeUi]::IsWindowVisible($dashboardWindow)) 'No se pudo restaurar el dashboard para probar el fin de sesion.'
+  Assert-True ([AiUsageNativeUi]::IsWindowVisible($overlay)) 'El overlay no permanecio activo antes del fin de sesion.'
+
+  $finalQueryResult = [IntPtr]::Zero
+  $finalQuerySent = [AiUsageNativeUi]::SendMessageTimeout($dashboardWindow, 0x0011, [IntPtr]::Zero, [IntPtr]::Zero,
+                                                          0x0002, 2000, [ref]$finalQueryResult)
+  Assert-True ($finalQuerySent -ne [IntPtr]::Zero -and $finalQueryResult -ne [IntPtr]::Zero) 'La consulta final de sesion no fue aceptada.'
+  Assert-True ([AiUsageNativeUi]::PostMessage($dashboardWindow, 0x0016, [IntPtr]1, [IntPtr]::Zero)) 'No se pudo confirmar el fin de sesion.'
+  Assert-True ($process.WaitForExit(5000)) 'La aplicacion no termino dentro de 5 segundos tras WM_ENDSESSION.'
+
+  Write-Output 'Windows UI smoke test passed: stable titles, overlay behavior, settings, close-to-tray and session shutdown lifecycle.'
 }
 finally {
   if ($process) {

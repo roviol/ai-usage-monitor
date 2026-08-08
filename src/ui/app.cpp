@@ -84,6 +84,9 @@ bool MonitorApp::OnInit() {
   if (!wxApp::OnInit()) return false;
   SetAppName("AIUsageMonitor");
   SetExitOnFrameDelete(false);
+#ifdef _WIN32
+  Bind(wxEVT_QUERY_END_SESSION, &MonitorApp::OnQueryEndSession, this);
+#endif
   const auto executable = std::filesystem::path(wxStandardPaths::Get().GetExecutablePath().ToStdWstring());
   paths_ = ResolveDataPaths(executable);
   const bool firstRun = !std::filesystem::exists(paths_.settings);
@@ -349,23 +352,30 @@ void MonitorApp::StopActivationWatcher() {
   activationThread_.join();
 }
 
-void MonitorApp::ExitApplication() {
+void MonitorApp::ShutdownRuntime() {
   if (exiting_) return;
   exiting_ = true;
   StopActivationWatcher();
-  {
+  if (!paths_.root.empty()) {
     std::error_code error;
     std::filesystem::remove(paths_.root / "ready.signal", error);
   }
   if (scheduler_) scheduler_->Stop();
 #ifdef _WIN32
+  if (overlay_) overlay_->Shutdown();
+#endif
+  if (tray_) tray_->RemoveIcon();
+}
+
+void MonitorApp::ExitApplication() {
+  if (exiting_) return;
+  ShutdownRuntime();
+#ifdef _WIN32
   if (overlay_) {
-    overlay_->Shutdown();
     auto* frame = overlay_.release();
     frame->Destroy();
   }
 #endif
-  if (tray_) tray_->RemoveIcon();
   tray_.reset();
   if (dashboard_) {
     auto* frame = dashboard_.release();
@@ -375,13 +385,19 @@ void MonitorApp::ExitApplication() {
 }
 
 int MonitorApp::OnExit() {
-  StopActivationWatcher();
-  if (scheduler_) scheduler_->Stop();
-#ifdef _WIN32
-  if (overlay_) overlay_->Shutdown();
-#endif
+  ShutdownRuntime();
   return wxApp::OnExit();
 }
+
+#ifdef _WIN32
+void MonitorApp::OnQueryEndSession(wxCloseEvent& event) {
+  if (event.CanVeto()) event.Veto(false);
+  // Handling the query here prevents wxWidgets from forwarding it to each
+  // top-level window, where the dashboard's normal close-to-tray behavior
+  // would veto the Windows session shutdown. Cleanup starts only after
+  // Windows confirms the end of the session.
+}
+#endif
 
 }  // namespace ai_usage::ui
 
