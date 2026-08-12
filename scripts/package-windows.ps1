@@ -13,7 +13,7 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "Release executable not found: $executable"
 }
 
-$stage = Join-Path $output "AIUsageMonitor-0.1.0-Windows-x64"
+$stage = Join-Path $output "AIUsageMonitor-0.1.1-Windows-x64"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item -LiteralPath $executable -Destination $stage -Force
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $stage -Force

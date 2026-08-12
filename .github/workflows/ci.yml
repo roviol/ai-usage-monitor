@@ -62,7 +62,7 @@ jobs:
         shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: xvfb-run -a ./scripts/measure-linux.sh dist/AIUsageMonitor-0.1.0-x86_64.AppImage
+        run: xvfb-run -a ./scripts/measure-linux.sh dist/AIUsageMonitor-0.1.1-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: AIUsageMonitor-Linux-x86_64

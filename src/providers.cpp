@@ -244,7 +244,7 @@ class CodexProvider final : public ProviderBase {
   ProviderSnapshot Refresh() override {
     BeginRefresh();
     const std::string requests =
-        "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"ai-usage-monitor\",\"title\":\"AI Usage Monitor\",\"version\":\"0.1.0\"},\"capabilities\":{}}}\n"
+        "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"ai-usage-monitor\",\"title\":\"AI Usage Monitor\",\"version\":\"0.1.1\"},\"capabilities\":{}}}\n"
         "{\"method\":\"initialized\",\"params\":{}}\n"
         "{\"method\":\"account/read\",\"id\":2,\"params\":{\"refreshToken\":false}}\n"
         "{\"method\":\"account/rateLimits/read\",\"id\":3}\n"

@@ -16,5 +16,5 @@ install -m644 "$root/packaging/linux/ai-usage-monitor.svg" "$appdir/usr/share/ic
 linuxdeploy="${LINUXDEPLOY:-linuxdeploy-x86_64.AppImage}"
 appimagetool="${APPIMAGETOOL:-appimagetool-x86_64.AppImage}"
 "$linuxdeploy" --appdir "$appdir" --executable "$appdir/usr/bin/ai-usage-monitor" --desktop-file "$appdir/ai-usage-monitor.desktop" --icon-file "$appdir/ai-usage-monitor.svg"
-ARCH=x86_64 "$appimagetool" "$appdir" "$root/$output_dir/AIUsageMonitor-0.1.0-x86_64.AppImage"
-sha256sum "$root/$output_dir/AIUsageMonitor-0.1.0-x86_64.AppImage" > "$root/$output_dir/AIUsageMonitor-0.1.0-x86_64.AppImage.sha256"
+ARCH=x86_64 "$appimagetool" "$appdir" "$root/$output_dir/AIUsageMonitor-0.1.1-x86_64.AppImage"
+sha256sum "$root/$output_dir/AIUsageMonitor-0.1.1-x86_64.AppImage" > "$root/$output_dir/AIUsageMonitor-0.1.1-x86_64.AppImage.sha256"

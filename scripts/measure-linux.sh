@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-artifact="${1:-dist/AIUsageMonitor-0.1.0-x86_64.AppImage}"
+artifact="${1:-dist/AIUsageMonitor-0.1.1-x86_64.AppImage}"
 if [[ ! -f "$artifact" ]]; then
   echo "Artifact not found: $artifact" >&2
   exit 1
