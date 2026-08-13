@@ -19,4 +19,4 @@
 
 - [x] 4.1 Add a repeatable asset validation check for the master/derivative file formats, square dimensions, transparency and required ICO size entries.
 - [x] 4.2 Configure and build the Windows release, run the existing unit/fixture/UI suites, package the portable ZIP and inspect a renamed executable in a clean directory for the branded Explorer/taskbar/window icon.
-- [ ] 4.3 Configure and build the Linux release, run the existing test suites, assemble the AppImage/AppDir and verify launcher metadata and installed icon paths without an image-generation service.
+- [x] 4.3 Configure and build the Linux release, run the existing test suites, assemble the AppImage/AppDir and verify launcher metadata and installed icon paths without an image-generation service.
