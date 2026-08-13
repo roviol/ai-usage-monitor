@@ -35,6 +35,7 @@ public static class AiUsageNativeUi {
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr window);
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr window);
   [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+  [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW")] static extern IntPtr GetClassLongPtr(IntPtr window, int index);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
   [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr window, bool altTab);
@@ -50,6 +51,12 @@ public static class AiUsageNativeUi {
   [DllImport("user32.dll")] static extern bool GetLayeredWindowAttributes(IntPtr window, out uint colour, out byte alpha, out uint flags);
 
   public static long ExtendedStyle(IntPtr window) { return GetWindowLongPtr(window, -20).ToInt64(); }
+  public static bool HasApplicationIcon(IntPtr window) {
+    foreach (int kind in new int[] { 1, 0, 2 }) {
+      if (SendMessage(window, 0x007F, new IntPtr(kind), IntPtr.Zero) != IntPtr.Zero) return true;
+    }
+    return GetClassLongPtr(window, -14) != IntPtr.Zero || GetClassLongPtr(window, -34) != IntPtr.Zero;
+  }
   public static int LayeredAlpha(IntPtr window) {
     uint colour, flags;
     byte alpha;
@@ -174,6 +181,7 @@ try {
   }
   Assert-True (-not $process.HasExited -and $process.MainWindowHandle -ne 0) 'El dashboard no inicio.'
   $dashboardWindow = $process.MainWindowHandle
+  Assert-True ([AiUsageNativeUi]::HasApplicationIcon($dashboardWindow)) 'El dashboard no expuso el icono de aplicacion.'
 
   [AiUsageNativeUi]::SetWindowPos($dashboardWindow, [IntPtr]::Zero, 80, 60, 460, 700, 0x40) | Out-Null
   Start-Sleep -Milliseconds 700
@@ -288,6 +296,7 @@ try {
     if ([AiUsageNativeUi]::Text($window) -like "$configurationLabel*") { $dialog = $window }
   }
   Assert-True ($dialog -ne [IntPtr]::Zero) 'Preferencias no se abrio mediante activacion nativa.'
+  Assert-True ([AiUsageNativeUi]::HasApplicationIcon($dialog)) 'Preferencias no expuso el icono de aplicacion.'
   [AiUsageNativeUi]::SetWindowPos($dialog, [IntPtr]::Zero, 120, 40, 620, 740, 0x40) | Out-Null
   Start-Sleep -Milliseconds 700
   $preferences = Get-ChildrenByText $dialog

@@ -1,5 +1,7 @@
 #include "ui.h"
 
+#include "app_icon.h"
+
 #ifdef _WIN32
 
 #include <wx/dcbuffer.h>
@@ -99,6 +101,7 @@ MinimalOverlayFrame::MinimalOverlayFrame(OverlaySettings settings, SettingsCallb
       settings_(std::move(settings)),
       settingsChanged_(std::move(settingsChanged)),
       countdownTimer_(this) {
+  ApplyApplicationIcon(*this);
   SetBackgroundStyle(wxBG_STYLE_PAINT);
   SetName("Overlay de cuotas de IA");
   Bind(wxEVT_PAINT, &MinimalOverlayFrame::OnPaint, this);

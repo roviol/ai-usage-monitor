@@ -1,5 +1,7 @@
 #include "ui.h"
 
+#include "app_icon.h"
+
 #include "ai_usage/tooltip.h"
 
 #include <wx/button.h>
@@ -195,6 +197,7 @@ class ProviderCard final : public ModernPanel {
 DashboardFrame::DashboardFrame(VoidCallback refreshAll, VoidCallback openSettings, TopCallback alwaysOnTop)
     : wxFrame(nullptr, wxID_ANY, "AI Usage Monitor", wxDefaultPosition, wxSize(680, 620), wxDEFAULT_FRAME_STYLE),
       refreshAll_(std::move(refreshAll)), openSettings_(std::move(openSettings)), alwaysOnTop_(std::move(alwaysOnTop)) {
+  ApplyApplicationIcon(*this);
   SetMinSize(wxSize(FromDIP(440), FromDIP(390)));
   theme_ = ResolveTheme(this);
   SetBackgroundColour(theme_.canvas);

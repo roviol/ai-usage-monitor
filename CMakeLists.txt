@@ -48,6 +48,7 @@ else()
 endif()
 
 add_executable(ai-usage-monitor WIN32
+  src/ui/app_icon.cpp
   src/ui/app.cpp
   src/ui/dashboard.cpp
   src/ui/overlay_frame.cpp
@@ -55,6 +56,9 @@ add_executable(ai-usage-monitor WIN32
   src/ui/settings_dialog.cpp
   src/ui/tray_icon.cpp
 )
+if(WIN32)
+  target_sources(ai-usage-monitor PRIVATE assets/application-icon.rc)
+endif()
 target_include_directories(ai-usage-monitor PRIVATE include src/ui assets)
 target_link_libraries(ai-usage-monitor PRIVATE ai_usage_core ai_usage_platform wx::core wx::base)
 target_compile_definitions(ai-usage-monitor PRIVATE AI_USAGE_VERSION="${PROJECT_VERSION}")
