@@ -253,8 +253,10 @@ class MonitorApp final : public wxApp {
   void ReceiveSnapshot(ProviderSnapshot snapshot);
   void PublishSnapshots();
   void MarkRefreshing(const std::string& providerId);
+  void ShutdownRuntime();
   void StopActivationWatcher();
 #ifdef _WIN32
+  void OnQueryEndSession(wxCloseEvent& event);
   void ApplyOverlaySettings();
   void ToggleOverlayVisibility();
   void ToggleOverlayLock();

@@ -166,7 +166,14 @@ void TestDomainValidation() {
 void TestAggregate() {
   ProviderSnapshot healthy{"a", "A", ProviderKind::Codex, Clock::now(), Freshness::Fresh, Health::Healthy};
   ProviderSnapshot partial{"b", "B", ProviderKind::DeepSeek, Clock::now(), Freshness::Stale, Health::Partial};
+  ProviderSnapshot disabled{"c", "C", ProviderKind::OpenAiCompatible, Clock::now(), Freshness::NoData,
+                            Health::Disabled};
+  CHECK(AggregateHealth({}) == Health::Disabled);
+  CHECK(AggregateHealth({disabled}) == Health::Disabled);
   CHECK(AggregateHealth({healthy}) == Health::Healthy);
+  healthy.freshness = Freshness::Stale;
+  CHECK(AggregateHealth({healthy}) == Health::Partial);
+  healthy.freshness = Freshness::Fresh;
   CHECK(AggregateHealth({healthy, partial}) == Health::Partial);
   partial.health = Health::Error;
   CHECK(AggregateHealth({healthy, partial}) == Health::Error);
@@ -598,10 +605,16 @@ void TestTooltip() {
   CHECK(tooltip.find("25%") != std::string::npos);
   CHECK(tooltip.find("75%") == std::string::npos);
   CHECK(tooltip.find("3m") != std::string::npos);
+  CHECK(tooltip.starts_with("IA: healthy"));
+  ProviderSnapshot disabled{"disabled", "Disabled", ProviderKind::OpenAiCompatible, now,
+                            Freshness::NoData, Health::Disabled};
+  const auto disabledTooltip = ComposeTooltip({disabled}, now, 127);
+  CHECK(disabledTooltip == "IA: disabled");
   ProviderSnapshot error{"broken", "A Error", ProviderKind::ClaudeSubscription, now, Freshness::NoData, Health::Error};
   error.error = ProviderError{"unauthorized", "denied", false, std::nullopt};
   const auto prioritized = ComposeTooltip({snapshot, error}, now, 127);
   CHECK(prioritized.size() <= 127U);
+  CHECK(prioritized.starts_with("IA: error"));
   CHECK(prioritized.find("A Error") < prioritized.find("Codex"));
 }
 
@@ -781,7 +794,7 @@ int main(int argc, char** argv) {
       return 2;
     }
     const std::string requests =
-        "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"ai-usage-monitor\",\"title\":\"AI Usage Monitor\",\"version\":\"0.1.0\"},\"capabilities\":{}}}\n"
+        "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"ai-usage-monitor\",\"title\":\"AI Usage Monitor\",\"version\":\"0.1.1\"},\"capabilities\":{}}}\n"
         "{\"method\":\"initialized\",\"params\":{}}\n"
         "{\"method\":\"account/read\",\"id\":2,\"params\":{\"refreshToken\":false}}\n"
         "{\"method\":\"account/rateLimits/read\",\"id\":3}\n"

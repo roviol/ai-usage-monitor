@@ -1,5 +1,7 @@
 #include "ui.h"
 
+#include "app_icon.h"
+
 #include "ai_usage/providers.h"
 
 #include <wx/button.h>
@@ -75,6 +77,7 @@ SettingsDialog::SettingsDialog(wxWindow* parent, Settings& settings, const DataP
                wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
       settings_(settings), working_(settings), paths_(paths), http_(http), process_(process), secrets_(secrets),
       overlayHotkeyStatus_(std::move(overlayHotkeyStatus)) {
+  ApplyApplicationIcon(*this);
   SetMinSize(wxSize(FromDIP(540), FromDIP(500)));
   theme_ = ResolveTheme(this);
   BuildUi();

@@ -13,12 +13,13 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "Release executable not found: $executable"
 }
 
-$stage = Join-Path $output "AIUsageMonitor-0.1.0-Windows-x64"
+$stage = Join-Path $output "AIUsageMonitor-0.1.1-Windows-x64"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item -LiteralPath $executable -Destination $stage -Force
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $stage -Force
 Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination $stage -Force
 Copy-Item -LiteralPath (Join-Path $root "THIRD_PARTY_NOTICES.md") -Destination $stage -Force
+& (Join-Path $root "scripts\test-application-icon.ps1") -Root $root -Executable (Join-Path $stage "ai-usage-monitor.exe")
 $stageScreenshots = Join-Path $stage "docs\screenshots"
 New-Item -ItemType Directory -Force -Path $stageScreenshots | Out-Null
 Copy-Item -LiteralPath (Join-Path $root "docs\screenshots\dashboard-modern-light.png") -Destination $stageScreenshots -Force

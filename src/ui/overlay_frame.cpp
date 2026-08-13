@@ -1,5 +1,7 @@
 #include "ui.h"
 
+#include "app_icon.h"
+
 #ifdef _WIN32
 
 #include <wx/dcbuffer.h>
@@ -94,11 +96,12 @@ wxColour Blend(const wxColour& first, const wxColour& second, double amount) {
 }  // namespace
 
 MinimalOverlayFrame::MinimalOverlayFrame(OverlaySettings settings, SettingsCallback settingsChanged)
-    : wxFrame(nullptr, wxID_ANY, "AI Usage Monitor - Overlay", wxDefaultPosition, wxSize(360, 120),
+    : wxFrame(nullptr, wxID_ANY, "AI Usage Monitor", wxDefaultPosition, wxSize(360, 120),
               wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxSTAY_ON_TOP),
       settings_(std::move(settings)),
       settingsChanged_(std::move(settingsChanged)),
       countdownTimer_(this) {
+  ApplyApplicationIcon(*this);
   SetBackgroundStyle(wxBG_STYLE_PAINT);
   SetName("Overlay de cuotas de IA");
   Bind(wxEVT_PAINT, &MinimalOverlayFrame::OnPaint, this);
@@ -217,7 +220,6 @@ void MinimalOverlayFrame::ReprojectAndResize(bool reanchor) {
     summary << ". ";
   }
   if (projection_.hiddenCount > 0) summary << projection_.hiddenCount << " cuotas adicionales.";
-  SetTitle(wxS("AI Usage Overlay · ") + wxString::FromUTF8(summary.str()));
   if (!settings_.locked) SetHelpText(wxString::FromUTF8(summary.str()));
   if (reanchor) AnchorToSavedCorner();
   ScheduleCountdown();
