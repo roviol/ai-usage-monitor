@@ -5,6 +5,7 @@
 #include <wx/bitmap.h>
 #include <wx/icon.h>
 #include <wx/iconbndl.h>
+#include <wx/image.h>
 #include <wx/toplevel.h>
 
 #ifdef _WIN32
@@ -19,6 +20,7 @@ namespace ai_usage::ui {
 namespace {
 
 wxIcon EmbeddedApplicationIcon() {
+  if (!wxImage::FindHandler(wxBITMAP_TYPE_PNG)) wxImage::AddHandler(new wxPNGHandler());
   const auto bitmap = wxBitmap::NewFromPNGData(application_icon_64_png,
                                                 sizeof(application_icon_64_png));
   wxIcon icon;

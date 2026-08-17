@@ -1,5 +1,8 @@
 # Linux build and tray notes
 
+Also verified on Debian 13 (trixie): the same `apt-get` package names and
+CMake presets configure, build, and pass `ctest` without changes.
+
 Ubuntu 24.04 build dependencies:
 
 ```sh
