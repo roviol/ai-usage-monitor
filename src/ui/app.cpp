@@ -118,7 +118,7 @@ bool MonitorApp::OnInit() {
         dashboard_->ApplyAlwaysOnTop(enabled);
       });
   dashboard_->ApplyAlwaysOnTop(settings_.alwaysOnTop);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   wxString overlayFixtureValue;
   if (fixtureMode && wxGetEnv("AI_USAGE_UI_OVERLAY", &overlayFixtureValue) && overlayFixtureValue == "1") {
     settings_.overlay.enabled = true;
@@ -129,8 +129,14 @@ bool MonitorApp::OnInit() {
 #endif
   tray_ = std::make_unique<TrayIcon>(
       [this] { ShowDashboard(); }, [this] { RefreshAll(); }, [this] { OpenSettings(); }, [this] { ExitApplication(); }
+#if defined(_WIN32) || defined(__linux__)
+      , [this] { ToggleOverlayVisibility(); },
 #ifdef _WIN32
-      , [this] { ToggleOverlayVisibility(); }, [this] { ToggleOverlayLock(); }, [this] {
+      [this] { ToggleOverlayLock(); },
+#else
+      TrayIcon::VoidCallback{},
+#endif
+      [this] {
         return TrayIcon::OverlayState{settings_.overlay.enabled, settings_.overlay.visible,
                                       settings_.overlay.locked};
       }
@@ -256,7 +262,7 @@ void MonitorApp::PublishSnapshots() {
   }
   dashboard_->SetSnapshots(ordered);
   if (tray_) tray_->SetSnapshots(ordered);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   if (overlay_) overlay_->SetSnapshots(ordered);
 #endif
 }
@@ -284,7 +290,7 @@ void MonitorApp::OpenSettings() {
                         std::move(overlayHotkeyStatus));
   if (dialog.ShowModal() == wxID_OK) {
     dashboard_->ApplyAlwaysOnTop(settings_.alwaysOnTop);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     ApplyOverlaySettings();
 #endif
     if (previousProviders != settings_.providers || previousRefresh != settings_.refreshMinutes) {
@@ -294,7 +300,7 @@ void MonitorApp::OpenSettings() {
   }
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 void MonitorApp::ApplyOverlaySettings() {
   if (!settings_.overlay.enabled) {
     if (overlay_) {
@@ -319,7 +325,9 @@ void MonitorApp::ToggleOverlayVisibility() {
   if (overlay_->IsOverlayVisible()) overlay_->HideOverlay();
   else overlay_->ShowOverlay();
 }
+#endif
 
+#ifdef _WIN32
 void MonitorApp::ToggleOverlayLock() {
   if (overlay_) overlay_->ToggleLock();
 }
@@ -361,7 +369,7 @@ void MonitorApp::ShutdownRuntime() {
     std::filesystem::remove(paths_.root / "ready.signal", error);
   }
   if (scheduler_) scheduler_->Stop();
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   if (overlay_) overlay_->Shutdown();
 #endif
   if (tray_) tray_->RemoveIcon();
@@ -370,7 +378,7 @@ void MonitorApp::ShutdownRuntime() {
 void MonitorApp::ExitApplication() {
   if (exiting_) return;
   ShutdownRuntime();
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   if (overlay_) {
     auto* frame = overlay_.release();
     frame->Destroy();

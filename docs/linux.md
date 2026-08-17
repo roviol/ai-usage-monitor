@@ -39,3 +39,44 @@ configuration.
 Credentials use the desktop Secret Service through `secret-tool`. If it is not
 available or unlocked, the adapter falls back explicitly to memory-only session
 storage; those keys cannot be recovered after restart.
+
+## Overlay
+
+Enable the minimal overlay from Settings ("Overlay minimalista" → Habilitar).
+It's a small always-on-top window, anchored to a corner (top-right by
+default), showing the same compact quota rows as the Windows overlay. Drag it
+to reposition; it snaps to the nearest corner on release and remembers its
+monitor and corner across restarts. Opacity is configurable from Settings and
+brightens on hover.
+
+This first pass deliberately omits the Windows overlay's click-through lock,
+global `Ctrl+Alt+U` shortcut, and automatic hiding over full-screen apps —
+Wayland has no portable API for global hotkeys or foreground-window
+detection, and reimplementing those X11-only would add real complexity for a
+first version. Show/hide is available from the tray menu instead.
+
+As with always-on-top generally (see above), GNOME/Wayland compositors may
+ignore the overlay's topmost request or lack transparency support; it
+degrades to a normal, fully opaque window in that case rather than failing to
+appear.
+
+Opacity specifically needs a running compositing manager (X11's Composite
+extension is not enough by itself — a compositor must own the
+`_NET_WM_CM_S0` selection). Some window managers disable their built-in
+compositor when they can't get GPU-accelerated GL, even though software
+compositing would work fine: xfwm4 does this and logs `Unsupported GL
+renderer` in `~/.xsession-errors` when it declines (seen on remote/virtual
+desktops using Mesa's software `llvmpipe` renderer, e.g. over xrdp with no
+GPU passthrough). If that happens, a lightweight standalone compositor
+running the XRender backend (no GPU required) fixes it without needing to
+touch the window manager's own setting:
+
+```sh
+sudo apt-get install picom
+picom --backend xrender --config /dev/null &
+```
+
+The overlay must be re-created after the compositor starts to pick up
+transparency (toggle it off and on from Settings, or restart the app) —
+`wxTopLevelWindow::SetTransparent()` negotiates the RGBA visual once, before
+the window is first shown.

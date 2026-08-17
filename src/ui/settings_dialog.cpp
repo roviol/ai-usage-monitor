@@ -117,9 +117,13 @@ void SettingsDialog::BuildUi() {
   globalPanel_->SetSizer(global);
   root->Add(globalPanel_, 0, wxEXPAND | wxALL, theme_.spaceMd);
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   auto* overlayPanel = new ModernPanel(this, theme_);
+#ifdef _WIN32
   overlayPanel->SetName("Overlay minimalista de Windows");
+#else
+  overlayPanel->SetName("Overlay minimalista de Linux");
+#endif
   auto* overlaySizer = new wxBoxSizer(wxVERTICAL);
   auto* overlayTitle = new wxStaticText(overlayPanel, wxID_ANY, "Overlay minimalista");
   overlayTitle->SetFont(theme_.sectionFont);
@@ -129,11 +133,13 @@ void SettingsDialog::BuildUi() {
   overlayEnabled_->SetValue(working_.overlay.enabled);
   overlayVisible_ = new wxCheckBox(overlayPanel, wxID_ANY, "Mostrar");
   overlayVisible_->SetValue(working_.overlay.visible);
-  overlayLocked_ = new wxCheckBox(overlayPanel, wxID_ANY, "Bloquear clics");
-  overlayLocked_->SetValue(working_.overlay.locked);
   overlayRow->Add(overlayEnabled_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, theme_.spaceLg);
   overlayRow->Add(overlayVisible_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, theme_.spaceLg);
+#ifdef _WIN32
+  overlayLocked_ = new wxCheckBox(overlayPanel, wxID_ANY, "Bloquear clics");
+  overlayLocked_->SetValue(working_.overlay.locked);
   overlayRow->Add(overlayLocked_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, theme_.spaceLg);
+#endif
   overlayRow->Add(new wxStaticText(overlayPanel, wxID_ANY, "Opacidad"), 0,
                   wxALIGN_CENTER_VERTICAL | wxRIGHT, theme_.spaceSm);
   overlayOpacity_ = new wxSpinCtrl(overlayPanel, wxID_ANY);
@@ -149,6 +155,7 @@ void SettingsDialog::BuildUi() {
   overlayCorner_->SetSelection(static_cast<int>(working_.overlay.corner));
   overlayRow->Add(overlayCorner_, 0, wxALIGN_CENTER_VERTICAL);
   overlaySizer->Add(overlayRow, 0, wxEXPAND | wxALL, theme_.spaceLg);
+#ifdef _WIN32
   overlaySuppressFullscreen_ = new wxCheckBox(overlayPanel, wxID_ANY,
                                                "Ocultar al usar una aplicación a pantalla completa");
   overlaySuppressFullscreen_->SetValue(working_.overlay.suppressFullscreen);
@@ -158,6 +165,7 @@ void SettingsDialog::BuildUi() {
   overlayShortcutStatus_ = new wxStaticText(overlayPanel, wxID_ANY, shortcut);
   overlayShortcutStatus_->SetName("Estado del atajo global Ctrl Alt U");
   overlaySizer->Add(overlayShortcutStatus_, 0, wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceLg);
+#endif
   overlayPanel->SetSizer(overlaySizer);
   root->Add(overlayPanel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceMd);
 #endif
@@ -559,13 +567,15 @@ void SettingsDialog::OnAccept(wxCommandEvent&) {
     SaveSelected();
     working_.refreshMinutes = refreshMinutes_->GetValue();
     working_.alwaysOnTop = alwaysOnTop_->GetValue();
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     working_.overlay.enabled = overlayEnabled_->GetValue();
     working_.overlay.visible = overlayVisible_->GetValue();
-    working_.overlay.locked = overlayLocked_->GetValue();
     working_.overlay.opacity = overlayOpacity_->GetValue();
     working_.overlay.corner = static_cast<OverlayCorner>(overlayCorner_->GetSelection());
+#ifdef _WIN32
+    working_.overlay.locked = overlayLocked_->GetValue();
     working_.overlay.suppressFullscreen = overlaySuppressFullscreen_->GetValue();
+#endif
 #endif
     for (const auto& provider : working_.providers) {
       if (provider.enabled &&

@@ -53,14 +53,16 @@ wxMenu* TrayIcon::CreatePopupMenu() {
   auto* menu = new wxMenu();
   menu->Append(ShowDashboard, "Abrir dashboard");
   menu->Append(RefreshAll, "Refrescar todo");
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   const auto overlay = overlayState_ ? overlayState_() : OverlayState{};
   auto* visibility = menu->Append(ToggleOverlayVisibility,
                                   overlay.visible ? "Ocultar overlay" : "Mostrar overlay");
+  visibility->Enable(overlay.enabled);
+#ifdef _WIN32
   auto* lock = menu->Append(ToggleOverlayLock,
                             overlay.locked ? "Desbloquear overlay" : "Bloquear clics");
-  visibility->Enable(overlay.enabled);
   lock->Enable(overlay.enabled);
+#endif
 #endif
   menu->Append(OpenSettings, wxS("Configuración"));
   menu->AppendSeparator();

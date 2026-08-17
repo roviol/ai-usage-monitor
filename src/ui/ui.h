@@ -117,14 +117,16 @@ class SettingsDialog final : public wxDialog {
   SemanticNotice* secretStorageNotice_{nullptr};
   wxSpinCtrl* refreshMinutes_{nullptr};
   wxCheckBox* alwaysOnTop_{nullptr};
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   wxCheckBox* overlayEnabled_{nullptr};
   wxCheckBox* overlayVisible_{nullptr};
-  wxCheckBox* overlayLocked_{nullptr};
   wxSpinCtrl* overlayOpacity_{nullptr};
   wxChoice* overlayCorner_{nullptr};
+#ifdef _WIN32
+  wxCheckBox* overlayLocked_{nullptr};
   wxCheckBox* overlaySuppressFullscreen_{nullptr};
   wxStaticText* overlayShortcutStatus_{nullptr};
+#endif
 #endif
   SemanticNotice* testResult_{nullptr};
   SemanticNotice* validationResult_{nullptr};
@@ -176,7 +178,7 @@ class TrayIcon final : public wxTaskBarIcon {
   bool available_{false};
 };
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 class MinimalOverlayFrame final : public wxFrame {
  public:
   using SettingsCallback = std::function<void(const OverlaySettings&)>;
@@ -187,29 +189,33 @@ class MinimalOverlayFrame final : public wxFrame {
   void ApplySettings(const OverlaySettings& settings);
   void ShowOverlay();
   void HideOverlay();
-  void ToggleLock();
-  void HandleForegroundEvent();
   void Shutdown();
   bool IsOverlayVisible() const { return settings_.visible; }
+#ifdef _WIN32
+  void ToggleLock();
+  void HandleForegroundEvent();
   bool IsLocked() const { return settings_.locked; }
   bool HotkeyAvailable() const { return hotkeyAvailable_; }
   const std::string& HotkeyWarning() const { return hotkeyWarning_; }
 
  protected:
   WXLRESULT MSWWindowProc(WXUINT message, WXWPARAM wParam, WXLPARAM lParam) override;
+#endif
 
  private:
   void ReprojectAndResize(bool reanchor = true);
   void AnchorToSavedCorner();
   void SnapToNearestCorner();
-  void ApplyNativeStyles();
   void ApplyOpacity(bool hovered = false);
+#ifdef _WIN32
+  void ApplyNativeStyles();
   void UpdateRoundedRegion();
   void RegisterRecoveryHotkey();
   void UnregisterRecoveryHotkey();
   void InstallForegroundHooks();
   void RemoveForegroundHooks();
   void HandleForegroundWindow(void* foregroundWindow);
+#endif
   void ScheduleCountdown();
   void PersistSettings();
   void OnPaint(wxPaintEvent& event);
@@ -229,12 +235,14 @@ class MinimalOverlayFrame final : public wxFrame {
   wxPoint dragOrigin_;
   wxPoint windowOrigin_;
   bool dragging_{false};
+  bool shuttingDown_{false};
+#ifdef _WIN32
   bool suppressed_{false};
   bool hotkeyAvailable_{false};
-  bool shuttingDown_{false};
   std::string hotkeyWarning_;
   void* foregroundHook_{nullptr};
   void* locationHook_{nullptr};
+#endif
 };
 #endif
 
@@ -257,9 +265,11 @@ class MonitorApp final : public wxApp {
   void StopActivationWatcher();
 #ifdef _WIN32
   void OnQueryEndSession(wxCloseEvent& event);
+  void ToggleOverlayLock();
+#endif
+#if defined(_WIN32) || defined(__linux__)
   void ApplyOverlaySettings();
   void ToggleOverlayVisibility();
-  void ToggleOverlayLock();
 #endif
 
   DataPaths paths_;
@@ -271,7 +281,7 @@ class MonitorApp final : public wxApp {
   std::unique_ptr<ISingleInstanceSignal> instanceSignal_;
   std::unique_ptr<DashboardFrame> dashboard_;
   std::unique_ptr<TrayIcon> tray_;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   std::unique_ptr<MinimalOverlayFrame> overlay_;
 #endif
   std::map<std::string, ProviderSnapshot> snapshots_;
