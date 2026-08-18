@@ -19,6 +19,23 @@ and verifies the official x86-64 release assets before running this command):
 packaging/linux/build-appimage.sh build/linux-release dist
 ```
 
+## Per-machine install with autostart
+
+`scripts/install-linux.sh` builds and installs the app for the current user
+(no root needed): binary under `~/.local/share/ai-usage-monitor`, a launcher
+symlink at `~/.local/bin/ai-usage-monitor`, a menu entry, the app icon, and a
+session autostart entry in `~/.config/autostart`. Re-run it any time after
+changing the code to rebuild incrementally and reinstall over the previous
+copy:
+
+```sh
+scripts/install-linux.sh            # build + install
+scripts/install-linux.sh --start    # also launch it now
+scripts/install-linux.sh --test     # run ctest before installing
+scripts/install-linux.sh --skip-build  # reuse the existing build/linux-release binary
+scripts/install-linux.sh --uninstall   # remove the install and autostart entry
+```
+
 KDE Plasma normally provides a StatusNotifier host. GNOME may require an
 AppIndicator/StatusNotifier extension; when wxGTK cannot install a tray icon the
 program should be launched as a normal dashboard and its configuration remains
