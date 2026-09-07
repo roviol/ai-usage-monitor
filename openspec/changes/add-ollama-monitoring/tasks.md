@@ -27,7 +27,7 @@
 
 ## 5. Verification and documentation
 
-- [ ] 5.1 Run unit/fixture tests and the affected Linux and Windows release builds.
+- [x] 5.1 Run unit/fixture tests and the affected Linux and Windows release builds.
 - [x] 5.2 Document Ollama setup, coverage, explicitly unsupported token/cost data, remote HTTPS behavior and secure credential handling.
 - [x] 5.3 Review requests, fixtures, settings diagnostics and cache output for plaintext credentials, inferred usage or generation calls.
 
