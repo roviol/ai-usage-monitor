@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <chrono>
 #include <cmath>
 #include <ctime>
@@ -363,13 +364,64 @@ class ClaudeSubscriptionProvider final : public ProviderBase {
 constexpr const char* kOllamaCloudUsageUrl = "https://ollama.com/api/usage";
 
 std::optional<TimePoint> ParseOllamaUnloadTime(const std::string& text) {
-  std::istringstream stream(text);
-  TimePoint value{};
-  stream >> std::chrono::parse("%Y-%m-%dT%H:%M:%SZ", value);
-  if (stream.fail()) return std::nullopt;
-  std::ws(stream);
-  if (!stream.eof()) return std::nullopt;
-  return value;
+  // Ollama marshals this from a Go time.Time, so it arrives as RFC 3339 with
+  // optional fractional seconds and either "Z" or a numeric offset. Written by
+  // hand rather than with std::chrono::parse, which libstdc++ only ships from
+  // GCC 14 on and would break the Ubuntu build.
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  int consumed = 0;
+  if (std::sscanf(text.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d%n", &year, &month, &day, &hour, &minute,
+                  &second, &consumed) != 6) {
+    return std::nullopt;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60 ||
+      hour < 0 || minute < 0 || second < 0) {
+    return std::nullopt;
+  }
+  std::string rest = text.substr(static_cast<std::size_t>(consumed));
+  if (!rest.empty() && rest.front() == '.') {
+    const auto end = rest.find_first_not_of("0123456789", 1U);
+    if (end == 1U) return std::nullopt;
+    rest = end == std::string::npos ? std::string{} : rest.substr(end);
+  }
+
+  // RFC 3339 requires a zone; a bare local time would be ambiguous, so reject it.
+  int offsetMinutes = 0;
+  bool zoned = false;
+  if (rest == "Z" || rest == "z") {
+    zoned = true;
+    rest.clear();
+  } else if (rest.size() == 6U && (rest.front() == '+' || rest.front() == '-')) {
+    int offsetHour = 0;
+    int offsetMinute = 0;
+    if (std::sscanf(rest.c_str() + 1, "%2d:%2d", &offsetHour, &offsetMinute) != 2) return std::nullopt;
+    if (offsetHour < 0 || offsetHour > 23 || offsetMinute < 0 || offsetMinute > 59) return std::nullopt;
+    offsetMinutes = offsetHour * 60 + offsetMinute;
+    if (rest.front() == '-') offsetMinutes = -offsetMinutes;
+    zoned = true;
+    rest.clear();
+  }
+  if (!zoned || !rest.empty()) return std::nullopt;
+
+  std::tm parts{};
+  parts.tm_year = year - 1900;
+  parts.tm_mon = month - 1;
+  parts.tm_mday = day;
+  parts.tm_hour = hour;
+  parts.tm_min = minute;
+  parts.tm_sec = second;
+#ifdef _WIN32
+  const auto raw = _mkgmtime(&parts);
+#else
+  const auto raw = timegm(&parts);
+#endif
+  if (raw == static_cast<std::time_t>(-1)) return std::nullopt;
+  return Clock::from_time_t(raw) - std::chrono::minutes{offsetMinutes};
 }
 
 class OllamaProvider final : public ProviderBase {

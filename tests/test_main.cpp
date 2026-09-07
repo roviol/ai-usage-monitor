@@ -484,6 +484,44 @@ void TestProviderKindDefaults() {
   CHECK(!ValidateSettings(Settings{1, 5, false, {}, {retyped}}).has_value());
 }
 
+void TestOllamaUnloadTimeFormats() {
+  ProviderConfig config{"ollama", "Ollama", ProviderKind::Ollama, true};
+  const auto past = Clock::now() - std::chrono::hours{24};
+  // Ollama marshals expires_at from a Go time.Time, so the real wire format
+  // carries fractional seconds and a numeric offset, not just a bare "Z".
+  const auto offset = ParseOllamaStatus(config, ReadFixture("ollama_unload_offset.json"), past);
+  CHECK(offset.metrics.size() == 2U);
+  CHECK(offset.metrics[1].resetsAt.has_value());
+  // 14:38:31 at -07:00 is 21:38:31 UTC.
+  const auto asTime = Clock::to_time_t(*offset.metrics[1].resetsAt);
+  std::tm utc{};
+#ifdef _WIN32
+  CHECK(gmtime_s(&utc, &asTime) == 0);
+#else
+  CHECK(gmtime_r(&asTime, &utc) != nullptr);
+#endif
+  CHECK(utc.tm_hour == 21);
+  CHECK(utc.tm_min == 38);
+  CHECK(utc.tm_sec == 31);
+
+  const auto zulu = ParseOllamaStatus(config, ReadFixture("ollama_multi.json"), past);
+  CHECK(zulu.metrics[1].resetsAt.has_value());
+
+  // An unload time already in the past is dropped rather than shown as pending.
+  const auto elapsed = ParseOllamaStatus(config, ReadFixture("ollama_unload_offset.json"),
+                                         Clock::now() + std::chrono::hours{24 * 365 * 10});
+  CHECK(!elapsed.metrics[1].resetsAt.has_value());
+
+  for (const char* rejected : {"2026-09-07", "2026-09-07T14:38:31", "2026-09-07T14:38:31+07",
+                               "2026-09-07T14:38:31.Z", "2026-09-07T25:00:00Z",
+                               "2026-13-07T14:38:31Z", "2026-09-07T14:38:31Z extra", "", "nope"}) {
+    const std::string body = std::string(R"({"models":[{"name":"m","expires_at":")") + rejected + R"("}]})";
+    bool threw = false;
+    try { (void)ParseOllamaStatus(config, body, past); } catch (...) { threw = true; }
+    CHECK(threw);
+  }
+}
+
 void TestOllamaAccountParser() {
   CHECK(ParseOllamaAccountLabel(ReadFixture("ollama_account.json")) == "roviol (plan pro)");
   CHECK(ParseOllamaAccountLabel(R"({"name":"roviol"})") == "roviol");
@@ -1263,6 +1301,7 @@ int main(int argc, char** argv) {
       {"generic", "fixture", TestGenericParser}, {"ollama", "fixture", TestOllamaParser},
       {"ollama-provider", "fixture", TestOllamaProvider}, {"settings", "unit", TestSettingsAndCache},
       {"ollama-settings", "unit", TestOllamaSettingsAndCache},
+      {"ollama-unload-time", "fixture", TestOllamaUnloadTimeFormats},
       {"ollama-account", "fixture", TestOllamaAccountParser},
       {"ollama-cloud", "fixture", TestOllamaCloudUsageParser},
       {"ollama-cloud-provider", "fixture", TestOllamaCloudProvider},
