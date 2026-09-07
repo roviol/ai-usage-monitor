@@ -37,6 +37,7 @@ ProviderKind ParseProviderKind(const std::string& text) {
   if (text == "claude-api") return ProviderKind::ClaudeSubscription;
   if (text == "deepseek") return ProviderKind::DeepSeek;
   if (text == "openai-compatible") return ProviderKind::OpenAiCompatible;
+  if (text == "ollama") return ProviderKind::Ollama;
   throw std::runtime_error("unknown provider kind");
 }
 
@@ -53,6 +54,8 @@ MetricKind ParseEnum<MetricKind>(const std::string& text) {
   if (text == "balance") return MetricKind::Balance;
   if (text == "spent") return MetricKind::Spent;
   if (text == "requests") return MetricKind::Requests;
+  if (text == "loaded-models") return MetricKind::LoadedModels;
+  if (text == "resource-memory") return MetricKind::ResourceMemory;
   throw std::runtime_error("unknown metric kind");
 }
 
@@ -64,6 +67,8 @@ MetricUnit ParseEnum<MetricUnit>(const std::string& text) {
   if (text == "USD") return MetricUnit::USD;
   if (text == "CNY") return MetricUnit::CNY;
   if (text == "seconds") return MetricUnit::Seconds;
+  if (text == "count") return MetricUnit::Count;
+  if (text == "bytes") return MetricUnit::Bytes;
   if (text == "unknown") return MetricUnit::Unknown;
   throw std::runtime_error("unknown metric unit");
 }
@@ -75,6 +80,7 @@ MetricScope ParseEnum<MetricScope>(const std::string& text) {
   if (text == "billing-period") return MetricScope::BillingPeriod;
   if (text == "lifetime") return MetricScope::Lifetime;
   if (text == "current-balance") return MetricScope::CurrentBalance;
+  if (text == "current-observation") return MetricScope::CurrentObservation;
   throw std::runtime_error("unknown metric scope");
 }
 
@@ -118,6 +124,8 @@ Json ProviderToJson(const ProviderConfig& provider, bool redact) {
   Json result{{"id", provider.id}, {"name", provider.name}, {"kind", ToString(provider.kind)}, {"enabled", provider.enabled},
               {"executable", provider.executable.string()}, {"baseUrl", provider.baseUrl},
               {"encryptedApiKey", redact && !provider.encryptedApiKey.empty() ? "<protected>" : provider.encryptedApiKey},
+              {"encryptedCloudKey",
+               redact && !provider.encryptedCloudKey.empty() ? "<protected>" : provider.encryptedCloudKey},
               {"usagePath", provider.usagePath}, {"balancePath", provider.balancePath},
               {"jsonPointers", provider.jsonPointers},
               {"allowLoopbackHttp", provider.allowLoopbackHttp}};
@@ -127,8 +135,9 @@ Json ProviderToJson(const ProviderConfig& provider, bool redact) {
 
 ProviderConfig ProviderFromJson(const Json& value) {
   ValidateObject(value, "provider",
-                 {"id", "name", "kind", "enabled", "executable", "baseUrl", "encryptedApiKey", "usagePath",
-                  "balancePath", "jsonPointers", "budget", "claudeBridge", "allowLoopbackHttp"},
+                 {"id", "name", "kind", "enabled", "executable", "baseUrl", "encryptedApiKey",
+                  "encryptedCloudKey", "usagePath", "balancePath", "jsonPointers", "budget", "claudeBridge",
+                  "allowLoopbackHttp"},
                  {"id", "name", "kind"});
   ProviderConfig provider;
   provider.id = value.at("id").get<std::string>();
@@ -138,6 +147,7 @@ ProviderConfig ProviderFromJson(const Json& value) {
   provider.executable = std::filesystem::path(value.value("executable", std::string{}));
   provider.baseUrl = value.value("baseUrl", std::string{});
   provider.encryptedApiKey = value.value("encryptedApiKey", std::string{});
+  provider.encryptedCloudKey = value.value("encryptedCloudKey", std::string{});
   provider.usagePath = value.value("usagePath", std::string{});
   provider.balancePath = value.value("balancePath", std::string{});
   provider.jsonPointers = value.value("jsonPointers", std::map<std::string, std::string>{});
@@ -431,6 +441,20 @@ DataPaths ResolveDataPaths(const std::filesystem::path& executablePath, IFilesys
   return paths;
 }
 
+ProviderKindDefaults DefaultsForKind(ProviderKind kind) {
+  switch (kind) {
+    case ProviderKind::DeepSeek:
+      return {"https://api.deepseek.com", "/user/balance", false};
+    case ProviderKind::Ollama:
+      return {"http://localhost:11434", "", true};
+    case ProviderKind::Codex:
+    case ProviderKind::ClaudeSubscription:
+    case ProviderKind::OpenAiCompatible:
+      break;
+  }
+  return {};
+}
+
 LoadSettingsResult LoadSettings(const DataPaths& paths) {
   LoadSettingsResult result;
   if (!std::filesystem::exists(paths.settings)) return result;
@@ -482,8 +506,16 @@ std::optional<std::string> ValidateSettings(const Settings& settings) {
   if (settings.overlay.monitor.size() > 256U) return "overlay monitor identifier is too long";
   for (const auto& provider : settings.providers) {
     if (provider.id.empty() || provider.name.empty()) return "provider id and name are required";
+    if (provider.kind == ProviderKind::Ollama && provider.baseUrl.empty()) {
+      return "provider base URL is required for Ollama";
+    }
     if (provider.budget.has_value() && (!IsDecimal(*provider.budget) || provider.budget->starts_with('-'))) {
       return "provider budget must be a non-negative decimal";
+    }
+    // The cloud credential is sent to ollama.com, never to the configured base
+    // URL, so it must not be attached to a provider that talks to a third party.
+    if (!provider.encryptedCloudKey.empty() && provider.kind != ProviderKind::Ollama) {
+      return "cloud credentials are only used by the Ollama provider";
     }
     for (const auto* route : {&provider.usagePath, &provider.balancePath}) {
       if (route->size() > 2048U || route->find("://") != std::string::npos ||

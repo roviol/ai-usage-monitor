@@ -31,7 +31,10 @@ std::string AgeText(const ProviderSnapshot& snapshot, TimePoint now) {
 std::string FormatMetric(const Metric& metric) {
   if (metric.availability != Availability::Available) return "N/D";
   std::ostringstream output;
-  if (metric.kind == MetricKind::Balance || metric.kind == MetricKind::Spent) {
+  if (metric.kind == MetricKind::LoadedModels) {
+    const auto count = static_cast<long long>(std::stold(metric.value));
+    output << metric.value << (count == 1 ? " modelo" : " modelos");
+  } else if (metric.kind == MetricKind::Balance || metric.kind == MetricKind::Spent) {
     output << metric.value << ' ' << ToString(metric.unit);
   } else if (metric.unit == MetricUnit::Percent) {
     output << metric.value << '%';
@@ -40,7 +43,6 @@ std::string FormatMetric(const Metric& metric) {
   }
   return output.str();
 }
-
 std::string ComposeTooltip(const std::vector<ProviderSnapshot>& snapshots, TimePoint now, std::size_t maxCharacters) {
   if (maxCharacters == 0U) return {};
   const auto aggregate = AggregateHealth(snapshots);
@@ -61,7 +63,7 @@ std::string ComposeTooltip(const std::vector<ProviderSnapshot>& snapshots, TimeP
       const auto metric = std::find_if(snapshot.metrics.begin(), snapshot.metrics.end(), [](const Metric& candidate) {
         return candidate.availability == Availability::Available &&
                (candidate.kind == MetricKind::UsedPercent || candidate.kind == MetricKind::Balance ||
-                candidate.kind == MetricKind::TotalTokens);
+                candidate.kind == MetricKind::TotalTokens || candidate.kind == MetricKind::LoadedModels);
       });
       part += metric == snapshot.metrics.end() ? "sin datos" : FormatMetric(*metric);
     }

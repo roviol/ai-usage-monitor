@@ -25,7 +25,7 @@ constexpr int TestProviderId = wxID_HIGHEST + 202;
 constexpr int OpenDataId = wxID_HIGHEST + 203;
 
 const wxArrayString& KindLabels() {
-  static const wxArrayString labels{"Codex", "Claude /usage local", "DeepSeek", "OpenAI-compatible"};
+  static const wxArrayString labels{"Codex", "Claude /usage local", "DeepSeek", "Ollama", "OpenAI-compatible"};
   return labels;
 }
 
@@ -34,6 +34,7 @@ ProviderKind KindFromIndex(int index) {
     case 0: return ProviderKind::Codex;
     case 1: return ProviderKind::ClaudeSubscription;
     case 2: return ProviderKind::DeepSeek;
+    case 3: return ProviderKind::Ollama;
     default: return ProviderKind::OpenAiCompatible;
   }
 }
@@ -43,9 +44,10 @@ int IndexFromKind(ProviderKind kind) {
     case ProviderKind::Codex: return 0;
     case ProviderKind::ClaudeSubscription: return 1;
     case ProviderKind::DeepSeek: return 2;
-    case ProviderKind::OpenAiCompatible: return 3;
+    case ProviderKind::Ollama: return 3;
+    case ProviderKind::OpenAiCompatible: return 4;
   }
-  return 3;
+  return 4;
 }
 
 std::string NewId(ProviderKind kind) {
@@ -231,9 +233,14 @@ void SettingsDialog::BuildUi() {
   connectionGrid->AddGrowableCol(1, 1);
   baseUrl_ = AddTextRow(connectionSection_, connectionGrid, "URL base:", 0, &baseUrlLabel_);
   baseUrl_->SetName("URL base");
-  apiKey_ = AddTextRow(connectionSection_, connectionGrid, "API key:", wxTE_PASSWORD, &apiKeyLabel_);
-  apiKey_->SetName("API key");
-  apiKey_->SetHint(wxS("Vacío conserva la clave protegida actual"));
+  apiKey_ = AddTextRow(connectionSection_, connectionGrid, "API key del servidor:", wxTE_PASSWORD,
+                       &apiKeyLabel_);
+  apiKey_->SetName("API key del servidor");
+  apiKey_->SetHint(wxS("Sólo si el servidor de arriba exige credencial"));
+  cloudKey_ = AddTextRow(connectionSection_, connectionGrid, wxS("API key de ollama.com:"), wxTE_PASSWORD,
+                         &cloudKeyLabel_);
+  cloudKey_->SetName("API key de ollama.com");
+  cloudKey_->SetHint(wxS("Pegue aquí la clave de ollama.com/settings/keys para ver los créditos"));
   connection->Add(connectionGrid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceMd);
   connectionSection_->SetSizer(connection);
   form->Add(connectionSection_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceMd);
@@ -272,6 +279,9 @@ void SettingsDialog::BuildUi() {
   security->Add(enabled_, 0, wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceMd);
   security->Add(loopback_, 0, wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceMd);
   security->Add(persistKey_, 0, wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceMd);
+  forgetKeys_ = new wxButton(securitySection_, wxID_ANY, "Olvidar claves guardadas");
+  forgetKeys_->SetName("Olvidar claves guardadas");
+  security->Add(forgetKeys_, 0, wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceMd);
   secretStorageNotice_ = new SemanticNotice(
       securitySection_,
       wxS("! Secret Service no está disponible. La clave sólo se conservará mientras esta aplicación permanezca abierta."),
@@ -314,7 +324,8 @@ void SettingsDialog::BuildUi() {
   SetEscapeId(wxID_CANCEL);
 
   providers_->Bind(wxEVT_LISTBOX, &SettingsDialog::OnSelect, this);
-  kind_->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { UpdateFieldVisibility(); });
+  kind_->Bind(wxEVT_CHOICE, &SettingsDialog::OnKindChanged, this);
+  forgetKeys_->Bind(wxEVT_BUTTON, &SettingsDialog::OnForgetKeys, this);
   Bind(wxEVT_BUTTON, &SettingsDialog::OnAdd, this, AddProviderId);
   Bind(wxEVT_BUTTON, &SettingsDialog::OnRemove, this, RemoveProviderId);
   Bind(wxEVT_BUTTON, &SettingsDialog::OnTest, this, TestProviderId);
@@ -393,10 +404,15 @@ void SettingsDialog::LoadSelected() {
   const auto& provider = working_.providers[static_cast<std::size_t>(selected_)];
   name_->SetValue(wxString::FromUTF8(provider.name));
   kind_->SetSelection(IndexFromKind(provider.kind));
+  editorKind_ = provider.kind;
   enabled_->SetValue(provider.enabled);
   executable_->SetValue(provider.executable.wstring());
   baseUrl_->SetValue(wxString::FromUTF8(provider.baseUrl));
   apiKey_->Clear();
+  cloudKey_->Clear();
+  cloudKey_->SetHint(provider.encryptedCloudKey.empty()
+                         ? wxS("Pegue aquí la clave de ollama.com/settings/keys para ver los créditos")
+                         : wxS("Clave de ollama.com guardada; vacío la conserva"));
   persistKey_->SetValue(!provider.encryptedApiKey.starts_with("session:") && secrets_.PersistentAvailable());
   if (!provider.encryptedApiKey.empty()) {
     try {
@@ -406,7 +422,7 @@ void SettingsDialog::LoadSelected() {
       apiKey_->SetHint("La credencial no puede descifrarse; vuelva a introducirla");
     }
   } else {
-    apiKey_->SetHint("Introduzca una clave; puede guardarla o usarla solo en esta sesion");
+    apiKey_->SetHint(wxS("Sólo si el servidor de arriba exige credencial"));
   }
   usagePath_->SetValue(wxString::FromUTF8(provider.usagePath));
   balancePath_->SetValue(wxString::FromUTF8(provider.balancePath));
@@ -430,6 +446,15 @@ void SettingsDialog::SaveSelected() {
   provider.enabled = enabled_->GetValue();
   provider.executable = std::filesystem::path(executable_->GetValue().ToStdWstring());
   provider.baseUrl = baseUrl_->GetValue().ToStdString(wxConvUTF8);
+  const auto plainCloudKey = cloudKey_->GetValue().ToStdString(wxConvUTF8);
+  if (!plainCloudKey.empty()) {
+    provider.encryptedCloudKey = persistKey_->GetValue() && secrets_.PersistentAvailable()
+                                     ? secrets_.Protect(plainCloudKey)
+                                     : secrets_.ProtectSession(plainCloudKey);
+  }
+  // The cloud credential only ever reaches ollama.com, so it must not survive a
+  // switch to a provider type that talks to a different host.
+  if (provider.kind != ProviderKind::Ollama) provider.encryptedCloudKey.clear();
   const auto plainKey = apiKey_->GetValue().ToStdString(wxConvUTF8);
   if (!plainKey.empty()) {
     provider.encryptedApiKey = persistKey_->GetValue() && secrets_.PersistentAvailable()
@@ -455,7 +480,8 @@ void SettingsDialog::SaveSelected() {
 void SettingsDialog::UpdateFieldVisibility() {
   const auto selectedKind = KindFromIndex(kind_->GetSelection());
   const bool local = selectedKind == ProviderKind::Codex || selectedKind == ProviderKind::ClaudeSubscription;
-  const bool http = selectedKind == ProviderKind::DeepSeek || selectedKind == ProviderKind::OpenAiCompatible;
+  const bool http = selectedKind == ProviderKind::DeepSeek || selectedKind == ProviderKind::OpenAiCompatible ||
+                    selectedKind == ProviderKind::Ollama;
   const bool generic = selectedKind == ProviderKind::OpenAiCompatible;
   const auto showRow = [](wxStaticText* label, wxWindow* control, bool show) {
     label->Show(show);
@@ -464,6 +490,7 @@ void SettingsDialog::UpdateFieldVisibility() {
   showRow(executableLabel_, executable_, local);
   showRow(baseUrlLabel_, baseUrl_, http);
   showRow(apiKeyLabel_, apiKey_, http);
+  showRow(cloudKeyLabel_, cloudKey_, selectedKind == ProviderKind::Ollama);
   showRow(usagePathLabel_, usagePath_, generic);
   showRow(balancePathLabel_, balancePath_, selectedKind == ProviderKind::DeepSeek || generic);
   showRow(budgetLabel_, budget_, selectedKind == ProviderKind::DeepSeek);
@@ -475,6 +502,44 @@ void SettingsDialog::UpdateFieldVisibility() {
   usageSection_->Show(selectedKind == ProviderKind::DeepSeek || generic);
   editorScroll_->FitInside();
   Layout();
+}
+
+void SettingsDialog::OnForgetKeys(wxCommandEvent&) {
+  if (selected_ < 0 || selected_ >= static_cast<int>(working_.providers.size())) return;
+  auto& provider = working_.providers[static_cast<std::size_t>(selected_)];
+  provider.encryptedApiKey.clear();
+  provider.encryptedCloudKey.clear();
+  apiKey_->Clear();
+  cloudKey_->Clear();
+  LoadSelected();
+  validationResult_->SetTone(StatusTone::Success);
+  validationResult_->SetText(wxS("Claves guardadas de este proveedor eliminadas."));
+  validationResult_->Show();
+  editorScroll_->FitInside();
+  Layout();
+}
+
+void SettingsDialog::OnKindChanged(wxCommandEvent&) {
+  // Changing the type leaves the previous type's endpoint behind, which would
+  // send the new provider to the old provider's host. Carry over anything the
+  // user typed, but replace values that are still the previous type's default.
+  const auto nextKind = KindFromIndex(kind_->GetSelection());
+  const auto previous = DefaultsForKind(editorKind_);
+  const auto next = DefaultsForKind(nextKind);
+  const auto retype = [](wxTextCtrl* control, const std::string& previousDefault,
+                         const std::string& nextDefault) {
+    const auto current = control->GetValue().ToStdString(wxConvUTF8);
+    if (current.empty() || current == previousDefault) control->SetValue(wxString::FromUTF8(nextDefault));
+  };
+  retype(baseUrl_, previous.baseUrl, next.baseUrl);
+  retype(balancePath_, previous.balancePath, next.balancePath);
+  if (loopback_->GetValue() == previous.allowLoopbackHttp) loopback_->SetValue(next.allowLoopbackHttp);
+  const auto& labels = KindLabels();
+  if (name_->GetValue() == labels[IndexFromKind(editorKind_)]) {
+    name_->SetValue(labels[IndexFromKind(nextKind)]);
+  }
+  editorKind_ = nextKind;
+  UpdateFieldVisibility();
 }
 
 void SettingsDialog::OnSelect(wxCommandEvent& event) {
@@ -490,10 +555,10 @@ void SettingsDialog::OnAdd(wxCommandEvent&) {
   provider.kind = selectedKind;
   provider.id = NewId(selectedKind);
   provider.name = KindLabels()[IndexFromKind(selectedKind)].ToStdString(wxConvUTF8);
-  if (selectedKind == ProviderKind::DeepSeek) {
-    provider.baseUrl = "https://api.deepseek.com";
-    provider.balancePath = "/user/balance";
-  }
+  const auto defaults = DefaultsForKind(selectedKind);
+  provider.baseUrl = defaults.baseUrl;
+  provider.balancePath = defaults.balancePath;
+  provider.allowLoopbackHttp = defaults.allowLoopbackHttp;
   if (selectedKind == ProviderKind::Codex) {
     const auto path = DiscoverExecutable("codex");
     if (path.has_value()) provider.executable = "codex";
@@ -583,7 +648,8 @@ void SettingsDialog::OnAccept(wxCommandEvent&) {
           provider.executable.empty()) {
         throw std::runtime_error("Seleccione un ejecutable compatible para " + provider.name + ".");
       }
-      if ((provider.kind == ProviderKind::DeepSeek || provider.kind == ProviderKind::OpenAiCompatible) &&
+      if ((provider.kind == ProviderKind::DeepSeek || provider.kind == ProviderKind::OpenAiCompatible ||
+           provider.kind == ProviderKind::Ollama) &&
           provider.baseUrl.empty()) {
         throw std::runtime_error("La URL base es obligatoria para " + provider.name + ".");
       }

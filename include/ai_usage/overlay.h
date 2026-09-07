@@ -37,6 +37,7 @@ OverlayCorner NearestOverlayCorner(int windowX, int windowY, int windowWidth, in
 bool CoversOverlayMonitor(int windowLeft, int windowTop, int windowRight, int windowBottom,
                           int monitorLeft, int monitorTop, int monitorRight, int monitorBottom);
 std::string FormatResetCountdown(std::optional<TimePoint> resetsAt, TimePoint now);
+std::string FormatUnloadCountdown(std::optional<TimePoint> resetsAt, TimePoint now);
 std::optional<TimePoint> NextOverlayCountdownUpdate(const std::vector<OverlayRow>& rows, TimePoint now);
 std::size_t OverlayRowCapacity(int workAreaHeight, int fixedHeight, int rowHeight);
 OverlayProjection ProjectOverlayRows(const std::vector<ProviderSnapshot>& snapshots, TimePoint now,

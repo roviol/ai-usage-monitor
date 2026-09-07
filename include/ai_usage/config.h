@@ -29,6 +29,7 @@ struct ProviderConfig {
   std::filesystem::path executable;
   std::string baseUrl;
   std::string encryptedApiKey;
+  std::string encryptedCloudKey;
   std::string usagePath;
   std::string balancePath;
   std::map<std::string, std::string> jsonPointers;
@@ -36,6 +37,12 @@ struct ProviderConfig {
   bool allowLoopbackHttp{false};
 
   bool operator==(const ProviderConfig&) const = default;
+};
+
+struct ProviderKindDefaults {
+  std::string baseUrl;
+  std::string balancePath;
+  bool allowLoopbackHttp{false};
 };
 
 struct Settings {
@@ -69,6 +76,7 @@ DataPaths ResolveDataPaths(const std::filesystem::path& executablePath, IFilesys
 std::filesystem::path MakeExecutableReferencePortable(
     const std::string& command, const std::filesystem::path& configured,
     const std::optional<std::filesystem::path>& discovered);
+ProviderKindDefaults DefaultsForKind(ProviderKind kind);
 LoadSettingsResult LoadSettings(const DataPaths& paths);
 void SaveSettings(const DataPaths& paths, const Settings& settings);
 std::vector<ProviderSnapshot> LoadCache(const DataPaths& paths);
