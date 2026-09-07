@@ -93,6 +93,26 @@ std::string FormatResetCountdown(std::optional<TimePoint> resetsAt, TimePoint no
          (hourPart == 0 ? std::string{} : " " + std::to_string(hourPart) + "h");
 }
 
+std::string FormatUnloadCountdown(std::optional<TimePoint> resetsAt, TimePoint now) {
+  if (!resetsAt.has_value()) return {};
+  const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(*resetsAt - now).count();
+  if (remaining <= 0) return "descargando";
+  if (remaining < 60) return "descarga en <1m";
+
+  const auto minutes = (remaining + 59) / 60;
+  if (minutes < 60) return "descarga en " + std::to_string(minutes) + "m";
+  const auto hours = minutes / 60;
+  const auto minutePart = minutes % 60;
+  if (hours < 24) {
+    return "descarga en " + std::to_string(hours) + "h" +
+           (minutePart == 0 ? std::string{} : " " + std::to_string(minutePart) + "m");
+  }
+  const auto days = hours / 24;
+  const auto hourPart = hours % 24;
+  return "descarga en " + std::to_string(days) + "d" +
+         (hourPart == 0 ? std::string{} : " " + std::to_string(hourPart) + "h");
+}
+
 std::optional<TimePoint> NextOverlayCountdownUpdate(const std::vector<OverlayRow>& rows, TimePoint now) {
   std::optional<TimePoint> earliestReset;
   bool hasFutureReset = false;
@@ -123,7 +143,9 @@ OverlayProjection ProjectOverlayRows(const std::vector<ProviderSnapshot>& snapsh
     const auto before = projected.size();
     for (const auto& metric : snapshot.metrics) {
       if (metric.kind == MetricKind::RemainingPercent || metric.availability != Availability::Available) continue;
-      if (metric.kind != MetricKind::UsedPercent && metric.kind != MetricKind::Balance &&
+      const bool instantaneous = metric.kind == MetricKind::LoadedModels ||
+                                 metric.kind == MetricKind::ResourceMemory;
+      if (!instantaneous && metric.kind != MetricKind::UsedPercent && metric.kind != MetricKind::Balance &&
           metric.kind != MetricKind::Spent) {
         continue;
       }
@@ -132,8 +154,11 @@ OverlayProjection ProjectOverlayRows(const std::vector<ProviderSnapshot>& snapsh
       const auto label = metric.label.empty()
                              ? (metric.kind == MetricKind::Balance ? std::string{"Balance"} : std::string{"Uso"})
                              : metric.label;
+      const auto resetText = metric.kind == MetricKind::ResourceMemory
+                                 ? FormatUnloadCountdown(metric.resetsAt, now)
+                                 : FormatResetCountdown(metric.resetsAt, now);
       projected.push_back({snapshot.providerId, snapshot.displayName, label, FormatMetric(metric), percent,
-                           metric.resetsAt, FormatResetCountdown(metric.resetsAt, now), status});
+                           metric.resetsAt, resetText, status});
     }
     if (projected.size() == before &&
         (snapshot.health != Health::Healthy || snapshot.freshness != Freshness::Fresh)) {

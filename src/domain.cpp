@@ -151,6 +151,16 @@ ValidationResult ValidateSnapshot(const ProviderSnapshot& snapshot) {
         result.errors.emplace_back("percentage is outside 0..100");
       }
     }
+    if ((metric.unit == MetricUnit::Count || metric.unit == MetricUnit::Bytes) &&
+        metric.availability == Availability::Available && std::stold(metric.value) < 0.0L) {
+      result.errors.emplace_back("resource metric is negative");
+    }
+    if (metric.kind == MetricKind::LoadedModels && metric.unit != MetricUnit::Count) {
+      result.errors.emplace_back("loaded-model metric requires count units");
+    }
+    if (metric.kind == MetricKind::ResourceMemory && metric.unit != MetricUnit::Bytes) {
+      result.errors.emplace_back("resource-memory metric requires byte units");
+    }
     if (metric.window.has_value() && metric.window->count() <= 0) {
       result.errors.emplace_back("window must be positive");
     }
@@ -204,7 +214,8 @@ std::string ToString(ProviderKind value) {
       std::pair{ProviderKind::Codex, "codex"},
       std::pair{ProviderKind::ClaudeSubscription, "claude-subscription"},
       std::pair{ProviderKind::DeepSeek, "deepseek"},
-      std::pair{ProviderKind::OpenAiCompatible, "openai-compatible"}};
+      std::pair{ProviderKind::OpenAiCompatible, "openai-compatible"},
+      std::pair{ProviderKind::Ollama, "ollama"}};
   return EnumString(value, values);
 }
 
@@ -213,7 +224,9 @@ std::string ToString(MetricKind value) {
       std::pair{MetricKind::UsedPercent, "used-percent"}, std::pair{MetricKind::RemainingPercent, "remaining-percent"},
       std::pair{MetricKind::InputTokens, "input-tokens"}, std::pair{MetricKind::OutputTokens, "output-tokens"},
       std::pair{MetricKind::TotalTokens, "total-tokens"}, std::pair{MetricKind::Balance, "balance"},
-      std::pair{MetricKind::Spent, "spent"}, std::pair{MetricKind::Requests, "requests"}};
+      std::pair{MetricKind::Spent, "spent"}, std::pair{MetricKind::Requests, "requests"},
+      std::pair{MetricKind::LoadedModels, "loaded-models"},
+      std::pair{MetricKind::ResourceMemory, "resource-memory"}};
   return EnumString(value, values);
 }
 
@@ -222,6 +235,7 @@ std::string ToString(MetricUnit value) {
       std::pair{MetricUnit::Percent, "percent"}, std::pair{MetricUnit::Tokens, "tokens"},
       std::pair{MetricUnit::Requests, "requests"}, std::pair{MetricUnit::USD, "USD"},
       std::pair{MetricUnit::CNY, "CNY"}, std::pair{MetricUnit::Seconds, "seconds"},
+      std::pair{MetricUnit::Count, "count"}, std::pair{MetricUnit::Bytes, "bytes"},
       std::pair{MetricUnit::Unknown, "unknown"}};
   return EnumString(value, values);
 }
@@ -230,7 +244,8 @@ std::string ToString(MetricScope value) {
   static constexpr std::array values{
       std::pair{MetricScope::RollingWindow, "rolling-window"}, std::pair{MetricScope::Day, "day"},
       std::pair{MetricScope::BillingPeriod, "billing-period"}, std::pair{MetricScope::Lifetime, "lifetime"},
-      std::pair{MetricScope::CurrentBalance, "current-balance"}};
+      std::pair{MetricScope::CurrentBalance, "current-balance"},
+      std::pair{MetricScope::CurrentObservation, "current-observation"}};
   return EnumString(value, values);
 }
 

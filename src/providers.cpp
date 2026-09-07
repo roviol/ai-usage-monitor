@@ -360,6 +360,46 @@ class ClaudeSubscriptionProvider final : public ProviderBase {
   }
 };
 
+std::optional<TimePoint> ParseOllamaUnloadTime(const std::string& text) {
+  std::istringstream stream(text);
+  TimePoint value{};
+  stream >> std::chrono::parse("%Y-%m-%dT%H:%M:%SZ", value);
+  if (stream.fail()) return std::nullopt;
+  std::ws(stream);
+  if (!stream.eof()) return std::nullopt;
+  return value;
+}
+
+class OllamaProvider final : public ProviderBase {
+ public:
+  using ProviderBase::ProviderBase;
+  ProviderCapabilities Capabilities() const override { return {false, false, false, false, "Ollama /api/ps"}; }
+  ConnectionTestResult TestConnection() override {
+    try {
+      const auto snapshot = Refresh();
+      return {snapshot.health == Health::Healthy, Capabilities(), "Ollama /api/ps disponible"};
+    } catch (const std::exception& error) {
+      return {false, Capabilities(), error.what()};
+    }
+  }
+  ProviderSnapshot Refresh() override {
+    BeginRefresh();
+    if (config_.baseUrl.empty()) throw std::runtime_error("Ollama base URL is required");
+    if (!IsSafeEndpointUrl(config_.baseUrl, config_.allowLoopbackHttp)) {
+      throw std::runtime_error("Ollama endpoint must use HTTPS or enabled loopback HTTP");
+    }
+    HttpRequest request;
+    request.url = JoinUrl(config_.baseUrl, "/api/ps");
+    request.headers["Accept"] = "application/json";
+    const auto key = ApiKey(config_, secrets_);
+    if (!key.empty()) request.headers["Authorization"] = "Bearer " + key;
+    request.allowLoopbackHttp = config_.allowLoopbackHttp;
+    const auto response = http_.Send(request);
+    RequireHttpSuccess(response);
+    return ParseOllamaStatus(config_, response.body, Clock::now());
+  }
+};
+
 void AddCodexWindow(std::vector<Metric>& metrics, const Json& window, const std::string& label) {
   if (!window.is_object() || !window.contains("usedPercent")) return;
   const auto used = NumberText(window["usedPercent"]);
@@ -515,6 +555,60 @@ std::optional<ProviderSnapshot> ParseClaudeUsageText(
   return snapshot;
 }
 
+ProviderSnapshot ParseOllamaStatus(
+    const ProviderConfig& config, const std::string& json, TimePoint observedAt) {
+  auto snapshot = BaseSnapshot(config, observedAt);
+  const auto root = Json::parse(json);
+  if (!root.is_object()) throw std::runtime_error("Ollama schema: root must be an object");
+  if (root.contains("models") && !root["models"].is_array()) {
+    throw std::runtime_error("Ollama schema: models must be an array");
+  }
+
+  std::size_t loaded = 0;
+  snapshot.metrics.push_back(Metric{MetricKind::LoadedModels, "0", MetricUnit::Count,
+                                    MetricScope::CurrentObservation, Provenance::ProviderReported,
+                                    Availability::Available, std::nullopt, std::nullopt, "Modelos cargados"});
+  if (root.contains("models")) {
+    for (const auto& model : root["models"]) {
+      if (!model.is_object()) throw std::runtime_error("Ollama schema: model must be an object");
+      if (!model.contains("name") || !model["name"].is_string()) {
+        throw std::runtime_error("Ollama schema: model name missing");
+      }
+      const auto name = model["name"].get<std::string>();
+      if (name.empty() || name.size() > 256U) throw std::runtime_error("Ollama schema: invalid model name");
+      ++loaded;
+
+      Metric memory{MetricKind::ResourceMemory,
+                    "",
+                    MetricUnit::Bytes,
+                    MetricScope::CurrentObservation,
+                    Provenance::ProviderReported,
+                    Availability::Unsupported,
+                    std::nullopt,
+                    std::nullopt,
+                    name};
+      if (model.contains("size_vram") && !model["size_vram"].is_null()) {
+        const auto value = NumberText(model["size_vram"]);
+        if (std::stold(value) < 0.0L) throw std::runtime_error("Ollama schema: negative memory value");
+        memory.value = value;
+        memory.availability = Availability::Available;
+      }
+      if (model.contains("expires_at") && !model["expires_at"].is_null()) {
+        if (!model["expires_at"].is_string()) {
+          throw std::runtime_error("Ollama schema: expires_at must be a string");
+        }
+        const auto unload = ParseOllamaUnloadTime(model["expires_at"].get<std::string>());
+        if (!unload.has_value()) throw std::runtime_error("Ollama schema: invalid unload timestamp");
+        if (*unload > observedAt) memory.resetsAt = *unload;
+      }
+      snapshot.metrics.push_back(std::move(memory));
+    }
+  }
+
+  snapshot.metrics.front().value = std::to_string(loaded);
+  return snapshot;
+}
+
 std::unique_ptr<IUsageProvider> CreateProvider(
     ProviderConfig config, IHttpClient& http, IProcessRunner& process, ISecretStore& secrets) {
   switch (config.kind) {
@@ -526,6 +620,8 @@ std::unique_ptr<IUsageProvider> CreateProvider(
       return std::make_unique<DeepSeekProvider>(std::move(config), http, process, secrets);
     case ProviderKind::OpenAiCompatible:
       return std::make_unique<GenericProvider>(std::move(config), http, process, secrets);
+    case ProviderKind::Ollama:
+      return std::make_unique<OllamaProvider>(std::move(config), http, process, secrets);
   }
   throw std::runtime_error("unsupported provider kind");
 }

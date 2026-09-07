@@ -25,7 +25,7 @@ constexpr int TestProviderId = wxID_HIGHEST + 202;
 constexpr int OpenDataId = wxID_HIGHEST + 203;
 
 const wxArrayString& KindLabels() {
-  static const wxArrayString labels{"Codex", "Claude /usage local", "DeepSeek", "OpenAI-compatible"};
+  static const wxArrayString labels{"Codex", "Claude /usage local", "DeepSeek", "Ollama", "OpenAI-compatible"};
   return labels;
 }
 
@@ -34,6 +34,7 @@ ProviderKind KindFromIndex(int index) {
     case 0: return ProviderKind::Codex;
     case 1: return ProviderKind::ClaudeSubscription;
     case 2: return ProviderKind::DeepSeek;
+    case 3: return ProviderKind::Ollama;
     default: return ProviderKind::OpenAiCompatible;
   }
 }
@@ -43,9 +44,10 @@ int IndexFromKind(ProviderKind kind) {
     case ProviderKind::Codex: return 0;
     case ProviderKind::ClaudeSubscription: return 1;
     case ProviderKind::DeepSeek: return 2;
-    case ProviderKind::OpenAiCompatible: return 3;
+    case ProviderKind::Ollama: return 3;
+    case ProviderKind::OpenAiCompatible: return 4;
   }
-  return 3;
+  return 4;
 }
 
 std::string NewId(ProviderKind kind) {
@@ -455,7 +457,8 @@ void SettingsDialog::SaveSelected() {
 void SettingsDialog::UpdateFieldVisibility() {
   const auto selectedKind = KindFromIndex(kind_->GetSelection());
   const bool local = selectedKind == ProviderKind::Codex || selectedKind == ProviderKind::ClaudeSubscription;
-  const bool http = selectedKind == ProviderKind::DeepSeek || selectedKind == ProviderKind::OpenAiCompatible;
+  const bool http = selectedKind == ProviderKind::DeepSeek || selectedKind == ProviderKind::OpenAiCompatible ||
+                    selectedKind == ProviderKind::Ollama;
   const bool generic = selectedKind == ProviderKind::OpenAiCompatible;
   const auto showRow = [](wxStaticText* label, wxWindow* control, bool show) {
     label->Show(show);
@@ -493,6 +496,10 @@ void SettingsDialog::OnAdd(wxCommandEvent&) {
   if (selectedKind == ProviderKind::DeepSeek) {
     provider.baseUrl = "https://api.deepseek.com";
     provider.balancePath = "/user/balance";
+  }
+  if (selectedKind == ProviderKind::Ollama) {
+    provider.baseUrl = "http://localhost:11434";
+    provider.allowLoopbackHttp = true;
   }
   if (selectedKind == ProviderKind::Codex) {
     const auto path = DiscoverExecutable("codex");
@@ -583,7 +590,8 @@ void SettingsDialog::OnAccept(wxCommandEvent&) {
           provider.executable.empty()) {
         throw std::runtime_error("Seleccione un ejecutable compatible para " + provider.name + ".");
       }
-      if ((provider.kind == ProviderKind::DeepSeek || provider.kind == ProviderKind::OpenAiCompatible) &&
+      if ((provider.kind == ProviderKind::DeepSeek || provider.kind == ProviderKind::OpenAiCompatible ||
+           provider.kind == ProviderKind::Ollama) &&
           provider.baseUrl.empty()) {
         throw std::runtime_error("La URL base es obligatoria para " + provider.name + ".");
       }

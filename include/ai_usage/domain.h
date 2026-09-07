@@ -10,10 +10,10 @@ namespace ai_usage {
 using Clock = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
-enum class ProviderKind { Codex, ClaudeSubscription, DeepSeek, OpenAiCompatible };
-enum class MetricKind { UsedPercent, RemainingPercent, InputTokens, OutputTokens, TotalTokens, Balance, Spent, Requests };
-enum class MetricUnit { Percent, Tokens, Requests, USD, CNY, Seconds, Unknown };
-enum class MetricScope { RollingWindow, Day, BillingPeriod, Lifetime, CurrentBalance };
+enum class ProviderKind { Codex, ClaudeSubscription, DeepSeek, OpenAiCompatible, Ollama };
+enum class MetricKind { UsedPercent, RemainingPercent, InputTokens, OutputTokens, TotalTokens, Balance, Spent, Requests, LoadedModels, ResourceMemory };
+enum class MetricUnit { Percent, Tokens, Requests, USD, CNY, Seconds, Count, Bytes, Unknown };
+enum class MetricScope { RollingWindow, Day, BillingPeriod, Lifetime, CurrentBalance, CurrentObservation };
 enum class Provenance { ProviderReported, CliBridge, LocallyObserved, Derived };
 enum class Availability { Available, Unsupported, Unauthorized, Unavailable, Disabled };
 enum class Freshness { Fresh, Stale, NoData };

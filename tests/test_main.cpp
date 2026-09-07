@@ -294,6 +294,40 @@ void TestGenericParser() {
   CHECK(rejected);
 }
 
+void TestOllamaParser() {
+  ProviderConfig config{"ollama", "Ollama", ProviderKind::Ollama, true};
+  const auto idle = ParseOllamaStatus(config, ReadFixture("ollama_idle.json"), Clock::now());
+  CHECK(idle.health == Health::Healthy);
+  CHECK(idle.metrics.size() == 1U);
+  CHECK(idle.metrics[0].kind == MetricKind::LoadedModels);
+  CHECK(idle.metrics[0].value == "0");
+
+  const auto loaded = ParseOllamaStatus(config, ReadFixture("ollama_loaded.json"), Clock::now());
+  CHECK(loaded.health == Health::Healthy);
+  CHECK(loaded.metrics.size() == 2U);
+  CHECK(loaded.metrics[0].kind == MetricKind::LoadedModels);
+  CHECK(loaded.metrics[0].value == "1");
+  CHECK(loaded.metrics[1].kind == MetricKind::ResourceMemory);
+  CHECK(loaded.metrics[1].unit == MetricUnit::Bytes);
+  CHECK(loaded.metrics[1].value == "1234567890");
+  CHECK(loaded.metrics[1].label == "llama3.1:latest");
+
+  const auto multi = ParseOllamaStatus(config, ReadFixture("ollama_multi.json"), Clock::now());
+  CHECK(multi.metrics.size() == 3U);
+  CHECK(multi.metrics[0].value == "2");
+  CHECK(multi.metrics[1].value == "1234567890");
+  CHECK(multi.metrics[2].availability == Availability::Unsupported);
+
+  bool malformedRejected = false;
+  try { (void)ParseOllamaStatus(config, R"({"models":{}})", Clock::now()); } catch (...) { malformedRejected = true; }
+  CHECK(malformedRejected);
+  bool badTimestampRejected = false;
+  try {
+    (void)ParseOllamaStatus(config, R"({"models":[{"name":"m","expires_at":"not-a-time"}]})", Clock::now());
+  } catch (...) { badTimestampRejected = true; }
+  CHECK(badTimestampRejected);
+}
+
 void TestSettingsAndCache() {
   const auto discoveredClaude = std::filesystem::path(R"(C:\Users\example\.local\bin\claude.exe)");
   CHECK(MakeExecutableReferencePortable("claude", discoveredClaude, discoveredClaude) ==
@@ -412,6 +446,69 @@ void TestSettingsAndCache() {
   std::filesystem::remove_all(root, error);
 }
 
+void TestOllamaSettingsAndCache() {
+  const auto root = std::filesystem::temp_directory_path() /
+                    ("ai-usage-ollama-test-" + std::to_string(Clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(root);
+  const DataPaths paths{root, root / "settings.json", root / "cache.json", true};
+  ProviderConfig provider{"ollama-local", "Ollama", ProviderKind::Ollama, false};
+  provider.baseUrl = "http://localhost:11434";
+  provider.encryptedApiKey = "protected:ollama-secret";
+  provider.allowLoopbackHttp = true;
+  Settings settings;
+  settings.providers.push_back(provider);
+  SaveSettings(paths, settings);
+  const auto restored = LoadSettings(paths).settings;
+  CHECK(restored.providers.size() == 1U);
+  CHECK(restored.providers[0].kind == ProviderKind::Ollama);
+  CHECK(restored.providers[0].baseUrl == "http://localhost:11434");
+  CHECK(restored.providers[0].allowLoopbackHttp);
+  CHECK(restored.providers[0].encryptedApiKey == "protected:ollama-secret");
+  CHECK(RedactedSettingsJson(restored).find("ollama-secret") == std::string::npos);
+
+  ProviderConfig missingUrl = provider;
+  missingUrl.baseUrl.clear();
+  Settings invalid;
+  invalid.providers.push_back(missingUrl);
+  CHECK(ValidateSettings(invalid).has_value());
+
+  ProviderSnapshot snapshot{"ollama-local", "Ollama", ProviderKind::Ollama, Clock::now(),
+                            Freshness::Fresh, Health::Healthy};
+  Metric count{MetricKind::LoadedModels, "2", MetricUnit::Count, MetricScope::CurrentObservation};
+  Metric memory{MetricKind::ResourceMemory, "1234567890", MetricUnit::Bytes, MetricScope::CurrentObservation};
+  memory.label = "llama3.1:latest";
+  memory.resetsAt = Clock::now() + std::chrono::minutes{3};
+  snapshot.metrics.push_back(count);
+  snapshot.metrics.push_back(memory);
+  CHECK(ValidateSnapshot(snapshot).valid);
+  SaveCache(paths, {snapshot});
+  const auto cache = LoadCache(paths);
+  CHECK(cache.size() == 1U);
+  CHECK(cache[0].kind == ProviderKind::Ollama);
+  CHECK(cache[0].metrics[0].kind == MetricKind::LoadedModels);
+  CHECK(cache[0].metrics[0].unit == MetricUnit::Count);
+  CHECK(cache[0].metrics[0].value == "2");
+  CHECK(cache[0].metrics[1].kind == MetricKind::ResourceMemory);
+  CHECK(cache[0].metrics[1].unit == MetricUnit::Bytes);
+  CHECK(cache[0].metrics[1].value == "1234567890");
+  CHECK(cache[0].metrics[1].resetsAt.has_value());
+
+  snapshot.metrics[1].value = "-1";
+  CHECK(!ValidateSnapshot(snapshot).valid);
+  Metric mixed{MetricKind::ResourceMemory, "1", MetricUnit::Bytes, MetricScope::CurrentObservation};
+  Metric other{MetricKind::LoadedModels, "1", MetricUnit::Count, MetricScope::CurrentObservation};
+  CHECK(!AggregateMetrics({mixed, other}).valid);
+
+  {
+    std::ofstream legacy(paths.cache, std::ios::binary | std::ios::trunc);
+    legacy << R"({"schemaVersion":1,"snapshots":[]})";
+  }
+  CHECK(LoadCache(paths).empty());
+
+  std::error_code cleanup;
+  std::filesystem::remove_all(root, cleanup);
+}
+
 void TestOverlayPresentationModel() {
   const auto now = TimePoint{std::chrono::seconds{6005}};
   Metric used{MetricKind::UsedPercent, "37", MetricUnit::Percent, MetricScope::RollingWindow};
@@ -460,6 +557,63 @@ void TestOverlayPresentationModel() {
   CHECK(FormatResetCountdown(now - std::chrono::seconds{1}, now) == "reiniciando");
   CHECK(FormatResetCountdown(now + std::chrono::seconds{20}, now) == "reinicia en <1m");
   CHECK(FormatResetCountdown(now + std::chrono::seconds{61}, now) == "reinicia en 2m");
+  CHECK(FormatUnloadCountdown(std::nullopt, now).empty());
+  CHECK(FormatUnloadCountdown(now - std::chrono::seconds{1}, now) == "descargando");
+  CHECK(FormatUnloadCountdown(now + std::chrono::seconds{20}, now) == "descarga en <1m");
+  CHECK(FormatUnloadCountdown(now + std::chrono::seconds{61}, now) == "descarga en 2m");
+
+  ProviderSnapshot freshOllama{"ollama", "Ollama", ProviderKind::Ollama, now, Freshness::Fresh, Health::Healthy};
+  Metric freshCount{MetricKind::LoadedModels, "1", MetricUnit::Count, MetricScope::CurrentObservation};
+  freshCount.label = "Modelos cargados";
+  Metric freshMemory{MetricKind::ResourceMemory, "1234", MetricUnit::Bytes,
+                     MetricScope::CurrentObservation};
+  freshMemory.label = "llama3.1:latest";
+  freshMemory.resetsAt = now + std::chrono::seconds{61};
+  freshOllama.metrics.push_back(freshCount);
+  freshOllama.metrics.push_back(freshMemory);
+  const auto freshRows = ProjectOverlayRows({freshOllama}, now, 8);
+  CHECK(freshRows.rows.size() == 2U);
+  CHECK(freshRows.rows[0].value == "1 modelo");
+  CHECK(freshRows.rows[1].value == "1234 bytes");
+  CHECK(freshRows.rows[1].resetText == "descarga en 2m");
+
+  const auto staleRows = ProjectOverlayRows({freshOllama}, now, 8);
+  CHECK(staleRows.rows.size() == 2U);
+  freshOllama.freshness = Freshness::Stale;
+  const auto staleAfter = ProjectOverlayRows({freshOllama}, now, 8);
+  CHECK(staleAfter.rows[0].statusText == "anterior");
+
+  ProviderSnapshot errorOllama{"ollama-error", "Ollama", ProviderKind::Ollama, now,
+                               Freshness::Stale, Health::Error};
+  errorOllama.error = ProviderError{"http-401", "authentication rejected", false, std::nullopt};
+  const auto errorRows = ProjectOverlayRows({errorOllama}, now, 8);
+  CHECK(errorRows.rows.size() == 1U);
+  CHECK(errorRows.rows[0].statusText == "error · anterior");
+
+  ProviderSnapshot idleOllama{"ollama-idle", "Ollama", ProviderKind::Ollama, now, Freshness::Fresh,
+                              Health::Healthy};
+  Metric idleCount{MetricKind::LoadedModels, "0", MetricUnit::Count, MetricScope::CurrentObservation};
+  idleCount.label = "Modelos cargados";
+  idleOllama.metrics.push_back(idleCount);
+  const auto idleRows = ProjectOverlayRows({idleOllama}, now, 8);
+  CHECK(idleRows.rows.size() == 1U);
+  CHECK(idleRows.rows[0].value == "0 modelos");
+
+  ProviderSnapshot multiOllama{"ollama-multi", "Ollama", ProviderKind::Ollama, now, Freshness::Fresh,
+                               Health::Healthy};
+  Metric multiCount{MetricKind::LoadedModels, "2", MetricUnit::Count, MetricScope::CurrentObservation};
+  Metric memoryA{MetricKind::ResourceMemory, "1234", MetricUnit::Bytes, MetricScope::CurrentObservation};
+  Metric memoryB{MetricKind::ResourceMemory, "2345", MetricUnit::Bytes, MetricScope::CurrentObservation};
+  memoryA.label = "llama3.1:latest";
+  memoryB.label = "qwen2.5-coder:7b";
+  multiOllama.metrics.push_back(multiCount);
+  multiOllama.metrics.push_back(memoryA);
+  multiOllama.metrics.push_back(memoryB);
+  const auto multiRows = ProjectOverlayRows({multiOllama}, now, 8);
+  CHECK(multiRows.rows.size() == 3U);
+  CHECK(multiRows.rows[0].value == "2 modelos");
+  CHECK(multiRows.rows[1].label == "llama3.1:latest");
+  CHECK(multiRows.rows[2].label == "qwen2.5-coder:7b");
   CHECK(NextOverlayCountdownUpdate(complete.rows, now) == TimePoint{std::chrono::seconds{6060}});
   auto imminent = complete.rows;
   imminent[0].resetsAt = now + std::chrono::seconds{20};
@@ -594,6 +748,64 @@ void TestProviderEndToEnd() {
   CHECK(claudeRejected);
 }
 
+void TestOllamaProvider() {
+  FakeHttp http;
+  FakeProcess process;
+  FakeSecrets secrets;
+  ProviderConfig config{"ollama", "Ollama", ProviderKind::Ollama, true};
+  config.baseUrl = "http://localhost:11434";
+  config.allowLoopbackHttp = true;
+  http.response = {200, {}, ReadFixture("ollama_idle.json")};
+  auto provider = CreateProvider(config, http, process, secrets);
+  const auto idle = provider->Refresh();
+  CHECK(idle.health == Health::Healthy);
+  CHECK(http.last.method == "GET");
+  CHECK(http.last.url == "http://localhost:11434/api/ps");
+  CHECK(http.last.allowLoopbackHttp);
+  CHECK(http.last.headers.find("Authorization") == http.last.headers.end());
+  CHECK(idle.metrics.size() == 1U);
+  CHECK(idle.metrics[0].value == "0");
+  CHECK(idle.metrics[0].kind == MetricKind::LoadedModels);
+
+  http.response = {200, {}, ReadFixture("ollama_loaded.json")};
+  const auto loaded = provider->Refresh();
+  CHECK(loaded.health == Health::Healthy);
+  CHECK(loaded.metrics.size() == 2U);
+  CHECK(loaded.metrics[0].value == "1");
+
+  ProviderConfig protectedConfig = config;
+  protectedConfig.encryptedApiKey = "protected:ollama-secret";
+  auto protectedProvider = CreateProvider(protectedConfig, http, process, secrets);
+  http.response = {200, {}, ReadFixture("ollama_idle.json")};
+  CHECK(protectedProvider->Refresh().health == Health::Healthy);
+  CHECK(http.last.headers.at("Authorization") == "Bearer ollama-secret");
+
+  for (const int status : {401, 403}) {
+    http.response = {status, {}, {}};
+    bool rejected = false;
+    try { (void)protectedProvider->Refresh(); }
+    catch (const ProviderException& error) {
+      rejected = true;
+      CHECK(error.Error().code == "unauthorized");
+      CHECK(error.Error().message.find("ollama-secret") == std::string::npos);
+    }
+    CHECK(rejected);
+  }
+
+  http.response = {200, {}, R"({"models":{}})"};
+  bool malformedRejected = false;
+  try { (void)protectedProvider->Refresh(); } catch (...) { malformedRejected = true; }
+  CHECK(malformedRejected);
+
+  http.response = {200, {}, ReadFixture("ollama_idle.json")};
+  const auto test = protectedProvider->TestConnection();
+  CHECK(test.success);
+  CHECK(!test.capabilities.usage);
+  CHECK(!test.capabilities.remaining);
+  CHECK(!test.capabilities.balance);
+  CHECK(!test.capabilities.tokenActivity);
+}
+
 void TestTooltip() {
   const auto now = Clock::now();
   ProviderSnapshot snapshot{"codex", "Codex", ProviderKind::Codex, now - std::chrono::minutes{3}, Freshness::Fresh, Health::Healthy};
@@ -616,9 +828,29 @@ void TestTooltip() {
   CHECK(prioritized.size() <= 127U);
   CHECK(prioritized.starts_with("IA: error"));
   CHECK(prioritized.find("A Error") < prioritized.find("Codex"));
+
+  ProviderSnapshot ollama{"ollama", "Ollama", ProviderKind::Ollama, now, Freshness::Fresh, Health::Healthy};
+  Metric loadedModels{MetricKind::LoadedModels, "2", MetricUnit::Count, MetricScope::CurrentObservation};
+  loadedModels.label = "Modelos cargados";
+  Metric modelMemory{MetricKind::ResourceMemory, "1234567890", MetricUnit::Bytes,
+                     MetricScope::CurrentObservation};
+  modelMemory.label = "llama3.1:latest";
+  ollama.metrics.push_back(loadedModels);
+  ollama.metrics.push_back(modelMemory);
+  const auto ollamaTooltip = ComposeTooltip({ollama}, now, 127);
+  CHECK(ollamaTooltip.find("2 modelos") != std::string::npos);
+  CHECK(ollamaTooltip.find("1234567890") == std::string::npos);
 }
 
 void TestPresentationRules() {
+  Metric count{MetricKind::LoadedModels, "2", MetricUnit::Count, MetricScope::CurrentObservation};
+  count.label = "Modelos cargados";
+  Metric singleCount{MetricKind::LoadedModels, "1", MetricUnit::Count, MetricScope::CurrentObservation};
+  Metric memory{MetricKind::ResourceMemory, "1234", MetricUnit::Bytes, MetricScope::CurrentObservation};
+  CHECK(FormatMetric(count) == "2 modelos");
+  CHECK(FormatMetric(singleCount) == "1 modelo");
+  CHECK(FormatMetric(memory) == "1234 bytes");
+
   const PresentationRgb white{255, 255, 255};
   const PresentationRgb dark{24, 32, 48};
   const PresentationRgb muted{150, 150, 150};
@@ -839,7 +1071,9 @@ int main(int argc, char** argv) {
       {"domain", "unit", TestDomainValidation}, {"aggregate", "unit", TestAggregate},
       {"codex", "fixture", TestCodexParser}, {"deepseek", "fixture", TestDeepSeekParser},
       {"claude", "fixture", TestClaudeParser}, {"claude-bridge", "fixture", TestClaudeBridge},
-      {"generic", "fixture", TestGenericParser}, {"settings", "unit", TestSettingsAndCache},
+      {"generic", "fixture", TestGenericParser}, {"ollama", "fixture", TestOllamaParser},
+      {"ollama-provider", "fixture", TestOllamaProvider}, {"settings", "unit", TestSettingsAndCache},
+      {"ollama-settings", "unit", TestOllamaSettingsAndCache},
       {"security", "unit", TestSecurityHelpers},
       {"process-instance", "unit", TestProcessCancellationAndSingleInstance},
       {"provider", "fixture", TestProviderEndToEnd},

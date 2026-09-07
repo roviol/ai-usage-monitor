@@ -37,6 +37,7 @@ ProviderKind ParseProviderKind(const std::string& text) {
   if (text == "claude-api") return ProviderKind::ClaudeSubscription;
   if (text == "deepseek") return ProviderKind::DeepSeek;
   if (text == "openai-compatible") return ProviderKind::OpenAiCompatible;
+  if (text == "ollama") return ProviderKind::Ollama;
   throw std::runtime_error("unknown provider kind");
 }
 
@@ -53,6 +54,8 @@ MetricKind ParseEnum<MetricKind>(const std::string& text) {
   if (text == "balance") return MetricKind::Balance;
   if (text == "spent") return MetricKind::Spent;
   if (text == "requests") return MetricKind::Requests;
+  if (text == "loaded-models") return MetricKind::LoadedModels;
+  if (text == "resource-memory") return MetricKind::ResourceMemory;
   throw std::runtime_error("unknown metric kind");
 }
 
@@ -64,6 +67,8 @@ MetricUnit ParseEnum<MetricUnit>(const std::string& text) {
   if (text == "USD") return MetricUnit::USD;
   if (text == "CNY") return MetricUnit::CNY;
   if (text == "seconds") return MetricUnit::Seconds;
+  if (text == "count") return MetricUnit::Count;
+  if (text == "bytes") return MetricUnit::Bytes;
   if (text == "unknown") return MetricUnit::Unknown;
   throw std::runtime_error("unknown metric unit");
 }
@@ -75,6 +80,7 @@ MetricScope ParseEnum<MetricScope>(const std::string& text) {
   if (text == "billing-period") return MetricScope::BillingPeriod;
   if (text == "lifetime") return MetricScope::Lifetime;
   if (text == "current-balance") return MetricScope::CurrentBalance;
+  if (text == "current-observation") return MetricScope::CurrentObservation;
   throw std::runtime_error("unknown metric scope");
 }
 
@@ -482,6 +488,9 @@ std::optional<std::string> ValidateSettings(const Settings& settings) {
   if (settings.overlay.monitor.size() > 256U) return "overlay monitor identifier is too long";
   for (const auto& provider : settings.providers) {
     if (provider.id.empty() || provider.name.empty()) return "provider id and name are required";
+    if (provider.kind == ProviderKind::Ollama && provider.baseUrl.empty()) {
+      return "provider base URL is required for Ollama";
+    }
     if (provider.budget.has_value() && (!IsDecimal(*provider.budget) || provider.budget->starts_with('-'))) {
       return "provider budget must be a non-negative decimal";
     }

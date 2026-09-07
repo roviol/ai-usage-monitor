@@ -91,7 +91,9 @@ wxString MetricMetadata(const Metric& metric) {
   wxString metadata;
   if (metric.resetsAt.has_value()) {
     wxDateTime reset(Clock::to_time_t(*metric.resetsAt));
-    metadata = wxS("Reinicia ") + reset.FormatISOCombined(' ');
+    metadata = metric.kind == MetricKind::ResourceMemory
+                   ? wxS("Descarga ") + reset.FormatISOCombined(' ')
+                   : wxS("Reinicia ") + reset.FormatISOCombined(' ');
   }
   if (metric.provenance != Provenance::ProviderReported) {
     if (!metadata.empty()) metadata += wxS("  ·  ");
