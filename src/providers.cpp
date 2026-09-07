@@ -6,7 +6,6 @@
 #include <array>
 #include <atomic>
 #include <cctype>
-#include <cstdio>
 #include <chrono>
 #include <cmath>
 #include <ctime>
@@ -368,22 +367,40 @@ std::optional<TimePoint> ParseOllamaUnloadTime(const std::string& text) {
   // optional fractional seconds and either "Z" or a numeric offset. Written by
   // hand rather than with std::chrono::parse, which libstdc++ only ships from
   // GCC 14 on and would break the Ubuntu build.
+  // Fixed-width digit runs rather than scanf: the widths are exactly what RFC
+  // 3339 mandates, and MSVC deprecates the scanf family under /WX anyway.
+  const auto digits = [&text](std::size_t offset, std::size_t count, int& out) {
+    if (offset + count > text.size()) return false;
+    int value = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto character = static_cast<unsigned char>(text[offset + i]);
+      if (!std::isdigit(character)) return false;
+      value = value * 10 + (character - '0');
+    }
+    out = value;
+    return true;
+  };
+
+  constexpr std::size_t kStampLength = 19U;
+  if (text.size() < kStampLength) return std::nullopt;
+  if (text[4] != '-' || text[7] != '-' || (text[10] != 'T' && text[10] != 't') || text[13] != ':' ||
+      text[16] != ':') {
+    return std::nullopt;
+  }
   int year = 0;
   int month = 0;
   int day = 0;
   int hour = 0;
   int minute = 0;
   int second = 0;
-  int consumed = 0;
-  if (std::sscanf(text.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d%n", &year, &month, &day, &hour, &minute,
-                  &second, &consumed) != 6) {
+  if (!digits(0U, 4U, year) || !digits(5U, 2U, month) || !digits(8U, 2U, day) ||
+      !digits(11U, 2U, hour) || !digits(14U, 2U, minute) || !digits(17U, 2U, second)) {
     return std::nullopt;
   }
-  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60 ||
-      hour < 0 || minute < 0 || second < 0) {
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60) {
     return std::nullopt;
   }
-  std::string rest = text.substr(static_cast<std::size_t>(consumed));
+  std::string rest = text.substr(kStampLength);
   if (!rest.empty() && rest.front() == '.') {
     const auto end = rest.find_first_not_of("0123456789", 1U);
     if (end == 1U) return std::nullopt;
@@ -399,8 +416,20 @@ std::optional<TimePoint> ParseOllamaUnloadTime(const std::string& text) {
   } else if (rest.size() == 6U && (rest.front() == '+' || rest.front() == '-')) {
     int offsetHour = 0;
     int offsetMinute = 0;
-    if (std::sscanf(rest.c_str() + 1, "%2d:%2d", &offsetHour, &offsetMinute) != 2) return std::nullopt;
-    if (offsetHour < 0 || offsetHour > 23 || offsetMinute < 0 || offsetMinute > 59) return std::nullopt;
+    const auto offsetDigits = [&rest](std::size_t offset, int& out) {
+      int value = 0;
+      for (std::size_t i = 0; i < 2U; ++i) {
+        const auto character = static_cast<unsigned char>(rest[offset + i]);
+        if (!std::isdigit(character)) return false;
+        value = value * 10 + (character - '0');
+      }
+      out = value;
+      return true;
+    };
+    if (rest[3] != ':' || !offsetDigits(1U, offsetHour) || !offsetDigits(4U, offsetMinute)) {
+      return std::nullopt;
+    }
+    if (offsetHour > 23 || offsetMinute > 59) return std::nullopt;
     offsetMinutes = offsetHour * 60 + offsetMinute;
     if (rest.front() == '-') offsetMinutes = -offsetMinutes;
     zoned = true;
