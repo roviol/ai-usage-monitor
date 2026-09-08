@@ -7,6 +7,7 @@
 #include "ai_usage/tooltip.h"
 
 #include <algorithm>
+#include <map>
 #include <atomic>
 #include <condition_variable>
 #include <cstdlib>
@@ -60,11 +61,19 @@ void SetDataDirectoryOverride(const std::optional<std::filesystem::path>& value)
 struct FakeHttp final : IHttpClient {
   HttpResponse response;
   std::vector<HttpResponse> responses;
+  std::map<std::string, HttpResponse> byUrl;
   std::vector<HttpRequest> requests;
   HttpRequest last;
+  const HttpRequest& LastFor(const std::string& url) const {
+    const auto match = std::find_if(requests.rbegin(), requests.rend(),
+                                    [&](const HttpRequest& item) { return item.url == url; });
+    if (match == requests.rend()) throw std::runtime_error("no request sent to " + url);
+    return *match;
+  }
   HttpResponse Send(const HttpRequest& request) override {
     last = request;
     requests.push_back(request);
+    if (const auto match = byUrl.find(request.url); match != byUrl.end()) return match->second;
     if (!responses.empty()) {
       const auto index = std::min(requests.size() - 1U, responses.size() - 1U);
       return responses[index];
@@ -446,6 +455,198 @@ void TestSettingsAndCache() {
   std::filesystem::remove_all(root, error);
 }
 
+void TestProviderKindDefaults() {
+  const auto ollama = DefaultsForKind(ProviderKind::Ollama);
+  CHECK(ollama.baseUrl == "http://localhost:11434");
+  CHECK(ollama.balancePath.empty());
+  CHECK(ollama.allowLoopbackHttp);
+  const auto deepseek = DefaultsForKind(ProviderKind::DeepSeek);
+  CHECK(deepseek.baseUrl == "https://api.deepseek.com");
+  CHECK(deepseek.balancePath == "/user/balance");
+  CHECK(!deepseek.allowLoopbackHttp);
+  // Switching a provider's type must not leave it pointing at the previous
+  // type's endpoint: the defaults of the two kinds share no values.
+  CHECK(ollama.baseUrl != deepseek.baseUrl);
+  for (const auto kind : {ProviderKind::Codex, ProviderKind::ClaudeSubscription,
+                          ProviderKind::OpenAiCompatible}) {
+    const auto defaults = DefaultsForKind(kind);
+    CHECK(defaults.baseUrl.empty());
+    CHECK(defaults.balancePath.empty());
+    CHECK(!defaults.allowLoopbackHttp);
+  }
+  ProviderConfig retyped{"deepseek-1", "DeepSeek", ProviderKind::DeepSeek, true};
+  retyped.baseUrl = deepseek.baseUrl;
+  retyped.balancePath = deepseek.balancePath;
+  retyped.kind = ProviderKind::Ollama;
+  retyped.baseUrl = ollama.baseUrl;
+  retyped.balancePath = ollama.balancePath;
+  retyped.allowLoopbackHttp = ollama.allowLoopbackHttp;
+  CHECK(!ValidateSettings(Settings{1, 5, false, {}, {retyped}}).has_value());
+}
+
+void TestOllamaUnloadTimeFormats() {
+  ProviderConfig config{"ollama", "Ollama", ProviderKind::Ollama, true};
+  const auto past = Clock::now() - std::chrono::hours{24};
+  // Ollama marshals expires_at from a Go time.Time, so the real wire format
+  // carries fractional seconds and a numeric offset, not just a bare "Z".
+  const auto offset = ParseOllamaStatus(config, ReadFixture("ollama_unload_offset.json"), past);
+  CHECK(offset.metrics.size() == 2U);
+  CHECK(offset.metrics[1].resetsAt.has_value());
+  // 14:38:31 at -07:00 is 21:38:31 UTC.
+  const auto asTime = Clock::to_time_t(*offset.metrics[1].resetsAt);
+  std::tm utc{};
+#ifdef _WIN32
+  CHECK(gmtime_s(&utc, &asTime) == 0);
+#else
+  CHECK(gmtime_r(&asTime, &utc) != nullptr);
+#endif
+  CHECK(utc.tm_hour == 21);
+  CHECK(utc.tm_min == 38);
+  CHECK(utc.tm_sec == 31);
+
+  const auto zulu = ParseOllamaStatus(config, ReadFixture("ollama_multi.json"), past);
+  CHECK(zulu.metrics[1].resetsAt.has_value());
+
+  // An unload time already in the past is dropped rather than shown as pending.
+  const auto elapsed = ParseOllamaStatus(config, ReadFixture("ollama_unload_offset.json"),
+                                         Clock::now() + std::chrono::hours{24 * 365 * 10});
+  CHECK(!elapsed.metrics[1].resetsAt.has_value());
+
+  for (const char* rejected : {"2026-09-07", "2026-09-07T14:38:31", "2026-09-07T14:38:31+07",
+                               "2026-09-07T14:38:31.Z", "2026-09-07T25:00:00Z",
+                               "2026-13-07T14:38:31Z", "2026-09-07T14:38:31Z extra", "", "nope"}) {
+    const std::string body = std::string(R"({"models":[{"name":"m","expires_at":")") + rejected + R"("}]})";
+    bool threw = false;
+    try { (void)ParseOllamaStatus(config, body, past); } catch (...) { threw = true; }
+    CHECK(threw);
+  }
+}
+
+void TestOllamaAccountParser() {
+  CHECK(ParseOllamaAccountLabel(ReadFixture("ollama_account.json")) == "roviol (plan pro)");
+  CHECK(ParseOllamaAccountLabel(R"({"name":"roviol"})") == "roviol");
+  // A plan name is a label, never a credit figure: nothing numeric is derived.
+  const auto label = ParseOllamaAccountLabel(ReadFixture("ollama_account.json"));
+  CHECK(label.find("60") == std::string::npos);
+  CHECK(label.find("$") == std::string::npos);
+  for (const char* unusable : {R"({"error":"not signed in"})", R"({"name":""})", R"({"name":42})",
+                               R"(["roviol"])", R"({"name":"ro\u0007viol"})", "not json", ""}) {
+    CHECK(ParseOllamaAccountLabel(unusable).empty());
+  }
+  CHECK(ParseOllamaAccountLabel(R"({"name":"roviol","plan":42})") == "roviol");
+  CHECK(ParseOllamaAccountLabel(std::string(R"({"name":")") + std::string(200U, 'x') + R"("})").empty());
+}
+
+void TestOllamaCloudUsageParser() {
+  const auto body = ReadFixture("ollama_cloud_usage.json");
+  const auto bare = ParseOllamaCloudUsage(body);
+  CHECK(bare.size() == 6U);
+  CHECK(bare[0].kind == MetricKind::UsedPercent);
+  CHECK(bare[0].value == "38.2");
+  CHECK(bare[0].unit == MetricUnit::Percent);
+  CHECK(bare[0].scope == MetricScope::BillingPeriod);
+  CHECK(bare[0].provenance == Provenance::ProviderReported);
+  CHECK(bare[1].kind == MetricKind::RemainingPercent);
+  CHECK(bare[1].value == "61.8");
+  CHECK(bare[1].provenance == Provenance::Derived);
+  // The endpoint publishes a fraction, never an amount: no currency figure may
+  // be produced from it under any configuration.
+  for (const auto& metric : bare) CHECK(metric.unit != MetricUnit::USD);
+  for (const auto& metric : bare) CHECK(metric.kind != MetricKind::Spent);
+  for (const auto& metric : bare) CHECK(metric.kind != MetricKind::Balance);
+  CHECK(bare[2].kind == MetricKind::Requests);
+  CHECK(bare[2].label == "glm-5.3-flash");
+  CHECK(bare[2].value == "2002");
+
+  const auto idle = ParseOllamaCloudUsage(ReadFixture("ollama_cloud_idle.json"));
+  CHECK(idle.size() == 2U);
+  CHECK(idle[0].value == "0.0");
+  CHECK(idle[1].value == "100");
+
+  ProviderSnapshot snapshot{"ollama", "Ollama", ProviderKind::Ollama, Clock::now(), Freshness::Fresh,
+                            Health::Healthy};
+  snapshot.metrics = ParseOllamaCloudUsage(body);
+  CHECK(ValidateSnapshot(snapshot).valid);
+
+  // Fail closed: a fraction outside 0..1, a missing section or a malformed
+  // entry must produce no metrics at all rather than a partial guess.
+  for (const char* rejected :
+       {R"({"limits":{"monthly":{"usage":1.5}}})", R"({"limits":{"monthly":{"usage":-0.1}}})",
+        R"({"limits":{"monthly":{"usage":"0.382"}}})", R"({"limits":{"monthly":{}}})",
+        R"({"limits":{}})", R"({})", R"({"limits":{"monthly":{"usage":0.1,"models":{}}}})",
+        R"({"limits":{"monthly":{"usage":0.1,"models":[{"name":"m"}]}}})",
+        R"({"limits":{"monthly":{"usage":0.1,"models":[{"name":"m","request_count":-2}]}}})",
+        "not json"}) {
+    bool threw = false;
+    try { (void)ParseOllamaCloudUsage(rejected); } catch (...) { threw = true; }
+    CHECK(threw);
+  }
+}
+
+void TestOllamaCloudProvider() {
+  FakeHttp http;
+  FakeProcess process;
+  FakeSecrets secrets;
+  const std::string psUrl = "http://localhost:11434/api/ps";
+  const std::string usageUrl = "https://ollama.com/api/usage";
+  ProviderConfig config{"ollama", "Ollama", ProviderKind::Ollama, true};
+  config.baseUrl = "http://localhost:11434";
+  config.allowLoopbackHttp = true;
+  config.encryptedApiKey = "protected:local-secret";
+  config.encryptedCloudKey = "protected:cloud-secret";
+  http.response = {200, {}, ReadFixture("ollama_idle.json")};
+  http.byUrl[usageUrl] = {200, {}, ReadFixture("ollama_cloud_usage.json")};
+  auto provider = CreateProvider(config, http, process, secrets);
+  const auto snapshot = provider->Refresh();
+  CHECK(snapshot.health == Health::Healthy);
+  CHECK(ValidateSnapshot(snapshot).valid);
+  CHECK(snapshot.metrics.size() == 7U);
+  CHECK(snapshot.metrics[0].kind == MetricKind::LoadedModels);
+  CHECK(snapshot.metrics[1].kind == MetricKind::UsedPercent);
+  CHECK(snapshot.metrics[1].value == "38.2");
+  CHECK(snapshot.metrics[2].kind == MetricKind::RemainingPercent);
+  CHECK(snapshot.metrics[2].value == "61.8");
+  CHECK(snapshot.metrics[3].kind == MetricKind::Requests);
+
+  // The local credential must never reach ollama.com, nor the cloud one the
+  // configured server: a leak either way hands a secret to the wrong host.
+  CHECK(http.LastFor(usageUrl).method == "GET");
+  CHECK(http.LastFor(usageUrl).headers.at("Authorization") == "Bearer cloud-secret");
+  CHECK(http.LastFor(psUrl).headers.at("Authorization") == "Bearer local-secret");
+
+  const auto capabilities = provider->TestConnection().capabilities;
+  CHECK(capabilities.usage);
+  CHECK(capabilities.remaining);
+  CHECK(!capabilities.balance);
+  CHECK(!capabilities.tokenActivity);
+
+  // A cloud failure keeps the loaded-model observation and degrades to partial.
+  for (const HttpResponse& broken :
+       {HttpResponse{500, {}, {}}, HttpResponse{401, {}, {}}, HttpResponse{200, {}, "not json"},
+        HttpResponse{200, {}, R"({"limits":{"monthly":{"usage":4}}})"}}) {
+    http.byUrl[usageUrl] = broken;
+    const auto degraded = provider->Refresh();
+    CHECK(degraded.health == Health::Partial);
+    CHECK(degraded.error.has_value());
+    CHECK(degraded.error->message.find("cloud-secret") == std::string::npos);
+    CHECK(degraded.metrics.size() == 1U);
+    CHECK(degraded.metrics[0].kind == MetricKind::LoadedModels);
+  }
+
+  // Without a cloud key the provider must not call ollama.com at all.
+  ProviderConfig localOnly = config;
+  localOnly.encryptedCloudKey.clear();
+  FakeHttp localHttp;
+  localHttp.response = {200, {}, ReadFixture("ollama_idle.json")};
+  auto localProvider = CreateProvider(localOnly, localHttp, process, secrets);
+  const auto localSnapshot = localProvider->Refresh();
+  CHECK(localSnapshot.health == Health::Healthy);
+  CHECK(localSnapshot.metrics.size() == 1U);
+  CHECK(std::none_of(localHttp.requests.begin(), localHttp.requests.end(),
+                     [](const HttpRequest& item) { return item.url.find("ollama.com") != std::string::npos; }));
+  CHECK(!localProvider->TestConnection().capabilities.usage);
+}
+
 void TestOllamaSettingsAndCache() {
   const auto root = std::filesystem::temp_directory_path() /
                     ("ai-usage-ollama-test-" + std::to_string(Clock::now().time_since_epoch().count()));
@@ -755,14 +956,18 @@ void TestOllamaProvider() {
   ProviderConfig config{"ollama", "Ollama", ProviderKind::Ollama, true};
   config.baseUrl = "http://localhost:11434";
   config.allowLoopbackHttp = true;
+  const std::string psUrl = "http://localhost:11434/api/ps";
+  const std::string meUrl = "http://localhost:11434/api/me";
   http.response = {200, {}, ReadFixture("ollama_idle.json")};
   auto provider = CreateProvider(config, http, process, secrets);
   const auto idle = provider->Refresh();
   CHECK(idle.health == Health::Healthy);
-  CHECK(http.last.method == "GET");
-  CHECK(http.last.url == "http://localhost:11434/api/ps");
-  CHECK(http.last.allowLoopbackHttp);
-  CHECK(http.last.headers.find("Authorization") == http.last.headers.end());
+  CHECK(http.LastFor(psUrl).method == "GET");
+  CHECK(http.LastFor(psUrl).allowLoopbackHttp);
+  CHECK(http.LastFor(psUrl).headers.find("Authorization") == http.LastFor(psUrl).headers.end());
+  CHECK(http.LastFor(meUrl).method == "POST");
+  CHECK(http.LastFor(meUrl).headers.find("Authorization") == http.LastFor(meUrl).headers.end());
+  CHECK(idle.accountLabel.empty());
   CHECK(idle.metrics.size() == 1U);
   CHECK(idle.metrics[0].value == "0");
   CHECK(idle.metrics[0].kind == MetricKind::LoadedModels);
@@ -778,7 +983,8 @@ void TestOllamaProvider() {
   auto protectedProvider = CreateProvider(protectedConfig, http, process, secrets);
   http.response = {200, {}, ReadFixture("ollama_idle.json")};
   CHECK(protectedProvider->Refresh().health == Health::Healthy);
-  CHECK(http.last.headers.at("Authorization") == "Bearer ollama-secret");
+  CHECK(http.LastFor(psUrl).headers.at("Authorization") == "Bearer ollama-secret");
+  CHECK(http.LastFor(meUrl).headers.at("Authorization") == "Bearer ollama-secret");
 
   for (const int status : {401, 403}) {
     http.response = {status, {}, {}};
@@ -796,6 +1002,27 @@ void TestOllamaProvider() {
   bool malformedRejected = false;
   try { (void)protectedProvider->Refresh(); } catch (...) { malformedRejected = true; }
   CHECK(malformedRejected);
+
+  http.response = {200, {}, ReadFixture("ollama_loaded.json")};
+  http.byUrl[meUrl] = {200, {}, ReadFixture("ollama_account.json")};
+  const auto labeled = provider->Refresh();
+  CHECK(labeled.health == Health::Healthy);
+  CHECK(labeled.accountLabel == "roviol (plan pro)");
+  CHECK(labeled.accountLabel.find("account@example.com") == std::string::npos);
+  CHECK(labeled.metrics.size() == 2U);
+
+  for (const HttpResponse& unusable :
+       {HttpResponse{200, {}, ReadFixture("ollama_account_anonymous.json")},
+        HttpResponse{200, {}, "not json at all"}, HttpResponse{500, {}, {}},
+        HttpResponse{404, {}, {}}}) {
+    http.byUrl[meUrl] = unusable;
+    const auto unlabeled = provider->Refresh();
+    CHECK(unlabeled.health == Health::Healthy);
+    CHECK(unlabeled.accountLabel.empty());
+    CHECK(unlabeled.metrics.size() == 2U);
+    CHECK(unlabeled.metrics[0].value == "1");
+  }
+  http.byUrl.erase(meUrl);
 
   http.response = {200, {}, ReadFixture("ollama_idle.json")};
   const auto test = protectedProvider->TestConnection();
@@ -1074,6 +1301,11 @@ int main(int argc, char** argv) {
       {"generic", "fixture", TestGenericParser}, {"ollama", "fixture", TestOllamaParser},
       {"ollama-provider", "fixture", TestOllamaProvider}, {"settings", "unit", TestSettingsAndCache},
       {"ollama-settings", "unit", TestOllamaSettingsAndCache},
+      {"ollama-unload-time", "fixture", TestOllamaUnloadTimeFormats},
+      {"ollama-account", "fixture", TestOllamaAccountParser},
+      {"ollama-cloud", "fixture", TestOllamaCloudUsageParser},
+      {"ollama-cloud-provider", "fixture", TestOllamaCloudProvider},
+      {"kind-defaults", "unit", TestProviderKindDefaults},
       {"security", "unit", TestSecurityHelpers},
       {"process-instance", "unit", TestProcessCancellationAndSingleInstance},
       {"provider", "fixture", TestProviderEndToEnd},

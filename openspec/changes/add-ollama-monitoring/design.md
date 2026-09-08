@@ -43,7 +43,21 @@ Alternative considered: add Ollama-specific host parsing or environment-variable
 
 A successful `/api/ps` response with no loaded models is healthy and produces a zero loaded-model metric. Invalid JSON, non-array models, invalid entries, negative byte counts or invalid future unload timestamps throw a schema error rather than producing invented metrics. Token, quota, spend and balance are explicitly unsupported; no generic fallback route is attempted.
 
-### 5. UI and presentation reuse
+### 5. Supplementary account plan, never derived credits
+
+The adapter will additionally issue one bounded `POST /api/me`, the only account-facing route the Ollama client exposes, and use its `name` and `plan` fields as the snapshot's account label. The request is best-effort: a local server with no signed-in account answers with an error or an unrecognized body, and that must not disturb the loaded-model observation. Only name and plan are kept; the response also carries an e-mail address and identifiers that are of no use here and are dropped rather than cached.
+
+### 6. Credits from the undocumented cloud usage endpoint
+
+`GET https://ollama.com/api/usage` answers `401 {"error":"invalid credentials"}` where every neighbouring path answers a plain `404`, and an ollama.com API key authenticates it. It is undocumented — absent from `llms.txt`, and `docs.ollama.com/api/usage` describes per-request metrics under the same name — and absent from the CLI binary, because it belongs to the web dashboard rather than the local server. The three closed feature requests (ollama/ollama#15132, #15663, #16448) and the community HTML scraper all predate it.
+
+It reports `limits.monthly.usage` as a `0..1` fraction plus per-model `request_count` values, and publishes no currency amount. The fraction therefore becomes a used/remaining percentage pair, the same shape the other providers' quotas already use, and no money figure is produced at all. Two alternatives were rejected: a price table keyed on the plan name would silently misreport the moment Ollama changes prices or the account changes plan, and deriving an amount from a user-entered allowance would inherit the fraction's three-decimal rounding while adding a number the endpoint never reported. The percentage is exact as published; that is the honest ceiling here.
+
+Because the endpoint lives on ollama.com rather than the configured base URL, it needs its own credential: sending the credential held for a protected local server to a third-party host would leak it, and vice versa. Hence `ProviderConfig::encryptedCloudKey`, sent only to ollama.com, cleared when the provider stops being an Ollama provider. A failed credit lookup degrades the snapshot to partial instead of discarding the loaded-model observation that did succeed.
+
+### 7. UI and presentation reuse
+
+
 
 Preferences will add an "Ollama" type and show only base URL, optional credential, secure storage, loopback HTTP and enable controls. Dashboard, tooltip and overlay presentation models will handle the new instantaneous kinds without treating them as percentages or balances. Ollama rows will state that they are loaded-model status, not AI usage.
 

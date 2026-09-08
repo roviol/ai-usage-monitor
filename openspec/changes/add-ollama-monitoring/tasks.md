@@ -27,6 +27,22 @@
 
 ## 5. Verification and documentation
 
-- [ ] 5.1 Run unit/fixture tests and the affected Linux and Windows release builds.
+- [x] 5.1 Run unit/fixture tests and the affected Linux and Windows release builds.
 - [x] 5.2 Document Ollama setup, coverage, explicitly unsupported token/cost data, remote HTTPS behavior and secure credential handling.
 - [x] 5.3 Review requests, fixtures, settings diagnostics and cache output for plaintext credentials, inferred usage or generation calls.
+
+## 6. Ollama Cloud account plan
+
+- [x] 6.1 Send one bounded, read-only `POST /api/me` alongside the loaded-model request, reusing the existing timeout, response cap, redirect policy and URL safety checks.
+- [x] 6.2 Parse only account name and plan, drop the e-mail and identifiers, and keep the snapshot healthy with no label when the request fails or the schema is unrecognized.
+- [x] 6.3 Add fixtures and tests for a signed-in account, an unrecognized body and an error status, asserting the loaded-model metrics survive each case.
+- [x] 6.4 Document that the account plan is observable but the monthly and consumed credits are not published by any Ollama API.
+
+## 7. Ollama Cloud monthly credits
+
+- [x] 7.1 Add a separate, secret-stored ollama.com credential that is sent only to `ollama.com` and never to the configured base URL.
+- [x] 7.2 Query `GET /api/usage` when that credential exists and map the monthly fraction to percentage metrics plus per-model request counts.
+- [x] 7.3 Present the reported fraction as used and remaining percentages only, producing no currency figure.
+- [x] 7.4 Degrade to partial on any credit-lookup failure while preserving the loaded-model observation and the credential's secrecy.
+- [x] 7.5 Add fixtures and tests for reported credits, an idle account, an absent credential, the absence of any currency metric and fail-closed schema rejection.
+- [x] 7.6 Document the endpoint, its undocumented status, the credential separation and the absence of token and currency data.

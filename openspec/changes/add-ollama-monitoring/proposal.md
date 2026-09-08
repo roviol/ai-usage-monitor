@@ -8,7 +8,9 @@ AI Usage Monitor todavía no puede observar un servidor Ollama local, por lo que
 - Consultar el endpoint público `GET /api/ps` de Ollama para obtener disponibilidad, número de modelos activos, consumo de memoria/VRAM por modelo y su hora de descarga cuando la API la publique.
 - Permitir una URL base configurable, con `http://localhost:11434` como valor inicial y HTTP loopback habilitado por defecto; las instancias remotas seguirán requiriendo HTTPS salvo excepción explícita.
 - Permitir opcionalmente una credencial Bearer almacenada de forma segura para servidores Ollama protegidos.
-- No llamar a endpoints de generación ni inventar tokens, cuotas, costes o históricos: Ollama mostrará sólo la actividad observable a través de `/api/ps`.
+- Etiquetar el snapshot con la cuenta y el plan que publica `POST /api/me`, de forma complementaria: si falla, la observación de modelos cargados sigue siendo válida.
+- Leer los créditos mensuales consumidos desde `GET https://ollama.com/api/usage` cuando el usuario guarde una API key de ollama.com, con credencial propia que nunca viaja al servidor configurado. El endpoint publica una fracción `0..1`, no un importe: se muestra como porcentaje usado y restante, igual que la cuota del resto de proveedores, y no se deriva ninguna cifra en moneda.
+- No llamar a endpoints de generación ni inventar tokens, cuotas o históricos. El recuento de tokens por cuenta no lo publica ninguna API de Ollama y queda declarado como no soportado.
 - Extender el modelo normalizado con métricas puntuales de recursos y conteo de modelos, manteniendo compatibilidad con la configuración y caché existentes.
 
 ## Capabilities

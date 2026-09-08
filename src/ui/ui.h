@@ -78,6 +78,8 @@ class SettingsDialog final : public wxDialog {
   void LoadSelected();
   void SaveSelected();
   void UpdateFieldVisibility();
+  void OnForgetKeys(wxCommandEvent& event);
+  void OnKindChanged(wxCommandEvent& event);
   void OnSelect(wxCommandEvent& event);
   void OnAdd(wxCommandEvent& event);
   void OnRemove(wxCommandEvent& event);
@@ -93,6 +95,7 @@ class SettingsDialog final : public wxDialog {
   IProcessRunner& process_;
   ISecretStore& secrets_;
   int selected_{-1};
+  ProviderKind editorKind_{ProviderKind::OpenAiCompatible};
   wxListBox* providers_{nullptr};
   wxChoice* addKind_{nullptr};
   wxTextCtrl* name_{nullptr};
@@ -104,6 +107,8 @@ class SettingsDialog final : public wxDialog {
   wxStaticText* baseUrlLabel_{nullptr};
   wxTextCtrl* apiKey_{nullptr};
   wxStaticText* apiKeyLabel_{nullptr};
+  wxTextCtrl* cloudKey_{nullptr};
+  wxStaticText* cloudKeyLabel_{nullptr};
   wxTextCtrl* usagePath_{nullptr};
   wxStaticText* usagePathLabel_{nullptr};
   wxTextCtrl* balancePath_{nullptr};
@@ -114,6 +119,7 @@ class SettingsDialog final : public wxDialog {
   wxStaticText* mappingsLabel_{nullptr};
   wxCheckBox* loopback_{nullptr};
   wxCheckBox* persistKey_{nullptr};
+  wxButton* forgetKeys_{nullptr};
   SemanticNotice* secretStorageNotice_{nullptr};
   wxSpinCtrl* refreshMinutes_{nullptr};
   wxCheckBox* alwaysOnTop_{nullptr};

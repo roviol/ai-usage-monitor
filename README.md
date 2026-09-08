@@ -1,7 +1,7 @@
 # AI Usage Monitor
 
 Monitor visual, residente y portable para consultar el uso disponible de Codex,
-Claude y servicios OpenAI-compatible (incluido DeepSeek). Está escrito en C++20,
+Claude, Ollama y servicios OpenAI-compatible (incluido DeepSeek). Está escrito en C++20,
 usa wxWidgets de forma estática y no necesita Python, JavaScript, Java ni el
 VC++ Redistributable en el equipo donde se ejecuta.
 
@@ -13,12 +13,16 @@ VC++ Redistributable en el equipo donde se ejecuta.
 | Claude suscripción | `claude /usage` local y no interactivo | Porcentaje usado y próximo reinicio de cada cuota que publique el cliente; no se configura API key ni se llama directamente a Anthropic |
 | DeepSeek | `GET /user/balance` | Saldo por moneda y consumo derivado si se configura un presupuesto |
 | OpenAI-compatible | `/models` y ruta configurable | Métricas definidas por JSON Pointer; nunca inventa una cuota que el endpoint no publique |
-| Ollama | `GET /api/ps` local o autoalojado | Disponibilidad del servidor, número de modelos cargados, memoria/VRAM por modelo y hora de descarga si la API la publica |
+| Ollama | `GET /api/ps` y `POST /api/me` local o autoalojado | Disponibilidad del servidor, número de modelos cargados, memoria/VRAM por modelo, hora de descarga si la API la publica, y cuenta con su plan |
+| Ollama Cloud | `GET ollama.com/api/usage` con API key propia | Porcentaje consumido y restante de la asignación mensual, y peticiones por modelo |
 
 Las métricas indican su procedencia. “Derivado” significa, por ejemplo, `100 -
-usado`; métricas de monedas o ventanas diferentes nunca se suman entre sí.
-Ollama expone estado local, no uso ni facturación: AI Usage Monitor no inventa
-tokens, cuotas, costes ni históricos.
+usado`; métricas de monedas o ventanas diferentes nunca se suman entre sí. En
+Ollama, el estado local no requiere credencial alguna; los créditos mensuales
+sólo aparecen si guarda una API key de ollama.com, porque ese dato vive
+exclusivamente en la nube de Ollama. AI Usage Monitor no inventa tokens, cuotas,
+costes ni históricos: el gasto y el saldo por cuenta no los publica ninguna API
+de Ollama y se declaran como no soportados.
 
 ## Uso en Windows
 
@@ -115,7 +119,33 @@ En Ollama, la URL por omisión es `http://localhost:11434` con HTTP de loopback
 habilitado. Una instancia remota debe usar HTTPS. Si el servidor está protegido,
 puede guardar una credencial Bearer en el almacenamiento seguro; si no la
 introduce, la petición no incluye cabecera `Authorization`. La integración sólo
-consulta `GET /api/ps`, no llama a rutas de generación ni envía prompts.
+consulta `GET /api/ps` y `POST /api/me`, no llama a rutas de generación ni envía
+prompts.
+
+De `/api/me` se conserva únicamente el nombre de cuenta y el plan, que se
+muestran como «Cuenta»; el correo y los identificadores que devuelve esa
+respuesta se descartan y nunca llegan a la caché. Es una consulta complementaria:
+si el servidor no tiene sesión iniciada, la observación de modelos cargados sigue
+siendo válida y la tarjeta simplemente no muestra cuenta.
+
+Para los créditos mensuales de Ollama Cloud, guarde una API key de
+[ollama.com/settings/keys](https://ollama.com/settings/keys) en el campo «API key
+ollama.com». Con ella la aplicación consulta `GET https://ollama.com/api/usage` y
+muestra el porcentaje consumido de la asignación mensual y las peticiones por
+modelo. Esa credencial es independiente de la del servidor configurado: viaja
+sólo a ollama.com y nunca al `baseUrl`, y la del servidor local nunca viaja a
+ollama.com. Sin API key no se contacta con ollama.com en absoluto.
+
+Ese endpoint no está documentado (no figura en `llms.txt`, y `docs.ollama.com/api/usage`
+describe otra cosa: métricas por petición) y devuelve el consumo como fracción
+`0..1`, sin importe. Se muestra como porcentaje usado y restante, con la misma
+barra que la cuota del resto de proveedores. La aplicación no deriva de ahí
+ninguna cifra en dólares: haría falta una lista de precios que Ollama puede
+cambiar sin avisar. Si la consulta falla, la tarjeta pasa a estado parcial,
+conserva los modelos cargados y no inventa ninguna cifra.
+
+El recuento de tokens, el gasto y el saldo por cuenta siguen sin estar
+disponibles: ninguna API de Ollama los publica.
 Las ubicaciones detectadas de los clientes estándar no se persisten: la configuración
 guarda solamente `codex` o `claude` y resuelve su ruta mediante `PATH` al ejecutarlos.
 

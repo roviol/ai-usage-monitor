@@ -360,20 +360,108 @@ class ClaudeSubscriptionProvider final : public ProviderBase {
   }
 };
 
+constexpr const char* kOllamaCloudUsageUrl = "https://ollama.com/api/usage";
+
 std::optional<TimePoint> ParseOllamaUnloadTime(const std::string& text) {
-  std::istringstream stream(text);
-  TimePoint value{};
-  stream >> std::chrono::parse("%Y-%m-%dT%H:%M:%SZ", value);
-  if (stream.fail()) return std::nullopt;
-  std::ws(stream);
-  if (!stream.eof()) return std::nullopt;
-  return value;
+  // Ollama marshals this from a Go time.Time, so it arrives as RFC 3339 with
+  // optional fractional seconds and either "Z" or a numeric offset. Written by
+  // hand rather than with std::chrono::parse, which libstdc++ only ships from
+  // GCC 14 on and would break the Ubuntu build.
+  // Fixed-width digit runs rather than scanf: the widths are exactly what RFC
+  // 3339 mandates, and MSVC deprecates the scanf family under /WX anyway.
+  const auto digits = [&text](std::size_t offset, std::size_t count, int& out) {
+    if (offset + count > text.size()) return false;
+    int value = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto character = static_cast<unsigned char>(text[offset + i]);
+      if (!std::isdigit(character)) return false;
+      value = value * 10 + (character - '0');
+    }
+    out = value;
+    return true;
+  };
+
+  constexpr std::size_t kStampLength = 19U;
+  if (text.size() < kStampLength) return std::nullopt;
+  if (text[4] != '-' || text[7] != '-' || (text[10] != 'T' && text[10] != 't') || text[13] != ':' ||
+      text[16] != ':') {
+    return std::nullopt;
+  }
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  if (!digits(0U, 4U, year) || !digits(5U, 2U, month) || !digits(8U, 2U, day) ||
+      !digits(11U, 2U, hour) || !digits(14U, 2U, minute) || !digits(17U, 2U, second)) {
+    return std::nullopt;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60) {
+    return std::nullopt;
+  }
+  std::string rest = text.substr(kStampLength);
+  if (!rest.empty() && rest.front() == '.') {
+    const auto end = rest.find_first_not_of("0123456789", 1U);
+    if (end == 1U) return std::nullopt;
+    rest = end == std::string::npos ? std::string{} : rest.substr(end);
+  }
+
+  // RFC 3339 requires a zone; a bare local time would be ambiguous, so reject it.
+  int offsetMinutes = 0;
+  bool zoned = false;
+  if (rest == "Z" || rest == "z") {
+    zoned = true;
+    rest.clear();
+  } else if (rest.size() == 6U && (rest.front() == '+' || rest.front() == '-')) {
+    int offsetHour = 0;
+    int offsetMinute = 0;
+    const auto offsetDigits = [&rest](std::size_t offset, int& out) {
+      int value = 0;
+      for (std::size_t i = 0; i < 2U; ++i) {
+        const auto character = static_cast<unsigned char>(rest[offset + i]);
+        if (!std::isdigit(character)) return false;
+        value = value * 10 + (character - '0');
+      }
+      out = value;
+      return true;
+    };
+    if (rest[3] != ':' || !offsetDigits(1U, offsetHour) || !offsetDigits(4U, offsetMinute)) {
+      return std::nullopt;
+    }
+    if (offsetHour > 23 || offsetMinute > 59) return std::nullopt;
+    offsetMinutes = offsetHour * 60 + offsetMinute;
+    if (rest.front() == '-') offsetMinutes = -offsetMinutes;
+    zoned = true;
+    rest.clear();
+  }
+  if (!zoned || !rest.empty()) return std::nullopt;
+
+  std::tm parts{};
+  parts.tm_year = year - 1900;
+  parts.tm_mon = month - 1;
+  parts.tm_mday = day;
+  parts.tm_hour = hour;
+  parts.tm_min = minute;
+  parts.tm_sec = second;
+#ifdef _WIN32
+  const auto raw = _mkgmtime(&parts);
+#else
+  const auto raw = timegm(&parts);
+#endif
+  if (raw == static_cast<std::time_t>(-1)) return std::nullopt;
+  return Clock::from_time_t(raw) - std::chrono::minutes{offsetMinutes};
 }
 
 class OllamaProvider final : public ProviderBase {
  public:
   using ProviderBase::ProviderBase;
-  ProviderCapabilities Capabilities() const override { return {false, false, false, false, "Ollama /api/ps"}; }
+  ProviderCapabilities Capabilities() const override {
+    const bool cloud = !config_.encryptedCloudKey.empty();
+    return {cloud, cloud, false, false,
+            cloud ? "Modelos cargados, plan y creditos mensuales; sin recuento de tokens"
+                  : "Modelos cargados y plan; anada una API key de ollama.com para los creditos"};
+  }
   ConnectionTestResult TestConnection() override {
     try {
       const auto snapshot = Refresh();
@@ -396,7 +484,53 @@ class OllamaProvider final : public ProviderBase {
     request.allowLoopbackHttp = config_.allowLoopbackHttp;
     const auto response = http_.Send(request);
     RequireHttpSuccess(response);
-    return ParseOllamaStatus(config_, response.body, Clock::now());
+    auto snapshot = ParseOllamaStatus(config_, response.body, Clock::now());
+    snapshot.accountLabel = AccountLabel(key);
+    AddCloudUsage(snapshot);
+    return snapshot;
+  }
+
+ private:
+  // The credits live on ollama.com, not on the configured server, so they use
+  // their own credential and never the one held for the local endpoint. A
+  // failure here degrades the snapshot to partial rather than discarding the
+  // loaded-model observation that did succeed.
+  void AddCloudUsage(ProviderSnapshot& snapshot) {
+    if (config_.encryptedCloudKey.empty()) return;
+    try {
+      HttpRequest request;
+      request.url = kOllamaCloudUsageUrl;
+      request.headers["Accept"] = "application/json";
+      request.headers["Authorization"] = "Bearer " + secrets_.Unprotect(config_.encryptedCloudKey);
+      const auto response = http_.Send(request);
+      RequireHttpSuccess(response);
+      const auto metrics = ParseOllamaCloudUsage(response.body);
+      snapshot.metrics.insert(snapshot.metrics.end(), metrics.begin(), metrics.end());
+    } catch (const ProviderException& error) {
+      snapshot.health = Health::Partial;
+      snapshot.error = error.Error();
+    } catch (const std::exception& error) {
+      snapshot.health = Health::Partial;
+      snapshot.error = ProviderError{"cloud-usage-failed", error.what(), true, std::nullopt};
+    }
+  }
+
+  // Supplementary: /api/me only labels the snapshot with the signed-in account,
+  // so a server without one must not turn a good observation into an error.
+  std::string AccountLabel(const std::string& key) {
+    try {
+      HttpRequest request;
+      request.method = "POST";
+      request.url = JoinUrl(config_.baseUrl, "/api/me");
+      request.headers["Accept"] = "application/json";
+      if (!key.empty()) request.headers["Authorization"] = "Bearer " + key;
+      request.allowLoopbackHttp = config_.allowLoopbackHttp;
+      const auto response = http_.Send(request);
+      if (response.status < 200 || response.status >= 300) return {};
+      return ParseOllamaAccountLabel(response.body);
+    } catch (const std::exception&) {
+      return {};
+    }
   }
 };
 
@@ -553,6 +687,93 @@ std::optional<ProviderSnapshot> ParseClaudeUsageText(
   }
   if (snapshot.metrics.empty()) return std::nullopt;
   return snapshot;
+}
+
+std::vector<Metric> ParseOllamaCloudUsage(const std::string& json) {
+  // ollama.com/api/usage reports the consumed share of the monthly allowance as
+  // a 0..1 fraction, plus per-model request counts. It publishes no currency
+  // amount and this adapter invents none: the fraction becomes a percentage,
+  // the same shape every other provider's quota uses.
+  std::vector<Metric> metrics;
+  const auto root = Json::parse(json);
+  if (!root.is_object()) throw std::runtime_error("Ollama usage schema: root must be an object");
+  if (!root.contains("limits") || !root["limits"].is_object()) {
+    throw std::runtime_error("Ollama usage schema: limits must be an object");
+  }
+  const auto& limits = root["limits"];
+  if (!limits.contains("monthly") || !limits["monthly"].is_object()) {
+    throw std::runtime_error("Ollama usage schema: monthly limits must be an object");
+  }
+  const auto& monthly = limits["monthly"];
+  if (!monthly.contains("usage") || !monthly["usage"].is_number()) {
+    throw std::runtime_error("Ollama usage schema: monthly usage must be a number");
+  }
+  const auto fraction = monthly["usage"].get<double>();
+  if (!std::isfinite(fraction) || fraction < 0.0 || fraction > 1.0) {
+    throw std::runtime_error("Ollama usage schema: monthly usage is outside 0..1");
+  }
+
+  const auto fixed = [](long double value, int decimals) {
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(decimals) << value;
+    return text.str();
+  };
+  const auto usedPercent = fixed(static_cast<long double>(fraction) * 100.0L, 1);
+  metrics.push_back(Metric{MetricKind::UsedPercent, usedPercent, MetricUnit::Percent,
+                           MetricScope::BillingPeriod, Provenance::ProviderReported, Availability::Available,
+                           std::nullopt, std::nullopt, "Creditos mensuales usados"});
+  metrics.push_back(Metric{MetricKind::RemainingPercent, SubtractDecimals("100.0", usedPercent),
+                           MetricUnit::Percent, MetricScope::BillingPeriod, Provenance::Derived,
+                           Availability::Available, std::nullopt, std::nullopt,
+                           "Creditos mensuales restantes"});
+
+  if (monthly.contains("models") && !monthly["models"].is_null()) {
+    if (!monthly["models"].is_array()) {
+      throw std::runtime_error("Ollama usage schema: monthly models must be an array");
+    }
+    for (const auto& model : monthly["models"]) {
+      if (!model.is_object()) throw std::runtime_error("Ollama usage schema: model must be an object");
+      if (!model.contains("name") || !model["name"].is_string()) {
+        throw std::runtime_error("Ollama usage schema: model name missing");
+      }
+      const auto name = model["name"].get<std::string>();
+      if (name.empty() || name.size() > 256U) throw std::runtime_error("Ollama usage schema: invalid model name");
+      if (!model.contains("request_count") || !model["request_count"].is_number_integer()) {
+        throw std::runtime_error("Ollama usage schema: request_count must be an integer");
+      }
+      const auto requests = model["request_count"].get<long long>();
+      if (requests < 0) throw std::runtime_error("Ollama usage schema: negative request count");
+      metrics.push_back(Metric{MetricKind::Requests, std::to_string(requests), MetricUnit::Requests,
+                               MetricScope::BillingPeriod, Provenance::ProviderReported,
+                               Availability::Available, std::nullopt, std::nullopt, name});
+    }
+  }
+  return metrics;
+}
+
+std::string ParseOllamaAccountLabel(const std::string& json) {
+  // Only the account name and plan are kept. The endpoint also returns an
+  // e-mail address and identifiers that this snapshot has no use for, so they
+  // are dropped rather than cached. Ollama publishes no credit figures here;
+  // the plan name must never be turned into an allowance or a spend value.
+  const auto printable = [](const std::string& value, std::size_t limit) {
+    if (value.empty() || value.size() > limit) return false;
+    return std::all_of(value.begin(), value.end(),
+                       [](unsigned char c) { return c >= 0x20 && c != 0x7F; });
+  };
+  try {
+    const auto root = Json::parse(json);
+    if (!root.is_object()) return {};
+    if (!root.contains("name") || !root["name"].is_string()) return {};
+    const auto name = root["name"].get<std::string>();
+    if (!printable(name, 128U)) return {};
+    if (!root.contains("plan") || !root["plan"].is_string()) return name;
+    const auto plan = root["plan"].get<std::string>();
+    if (!printable(plan, 64U)) return name;
+    return name + " (plan " + plan + ")";
+  } catch (const std::exception&) {
+    return {};
+  }
 }
 
 ProviderSnapshot ParseOllamaStatus(
