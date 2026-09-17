@@ -486,7 +486,12 @@ void TestProviderKindDefaults() {
 
 void TestOllamaUnloadTimeFormats() {
   ProviderConfig config{"ollama", "Ollama", ProviderKind::Ollama, true};
-  const auto past = Clock::now() - std::chrono::hours{24};
+  // Use a fixed observation point well before the fixture timestamps. Deriving
+  // `past` from the wall clock makes this time-dependent: once the clock passes
+  // the fixture dates, the unload times are treated as already elapsed and the
+  // resetsAt expectations below rot. A fixed early point (2019-01-01T00:00:00Z)
+  // keeps them pending regardless of when the suite runs.
+  const auto past = Clock::from_time_t(1546300800);  // 2019-01-01T00:00:00Z
   // Ollama marshals expires_at from a Go time.Time, so the real wire format
   // carries fractional seconds and a numeric offset, not just a bare "Z".
   const auto offset = ParseOllamaStatus(config, ReadFixture("ollama_unload_offset.json"), past);
