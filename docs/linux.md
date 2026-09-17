@@ -108,7 +108,7 @@ verificadas en una máquina Linux con sesión XFCE/headless bajo Xvfb:
 | Build de release con `-Werror` (warnings-as-errors) | ✓ pasa |
 | Unit tests (`ai-usage-unit-tests`) | ✓ 13/13 |
 | Dashboard wxGTK en tema claro/oscuro bajo fixturas | ✓ capturas light/dark distintas (luminancia media 246 vs 43) |
-| AppImage Linux (`AIUsageMonitor-0.2.0-x86_64.AppImage`) | ✓ construido (19,7 MiB) |
+| AppImage Linux (`AIUsageMonitor-0.3.0-x86_64.AppImage`) | ✓ construido (19,7 MiB) |
 | Tamaño del artefacto ≤ 45 MiB | ✓ 19 696 120 bytes |
 | RSS ociosa a los 60 s ≤ 50 MiB | ✓ 14 872 KiB |
 

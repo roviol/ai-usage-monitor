@@ -102,6 +102,19 @@ wxString MetricMetadata(const Metric& metric) {
   return metadata;
 }
 
+// Margins that frame the provider card area, in logical pixels (DIP).
+// Matches the dashboard root margin (theme_.spaceMd) for the scrolled panel.
+constexpr int kGridMarginLogicalDip = 12;
+// Minimum width of a grid cell in logical pixels (includes the card's inner padding).
+constexpr int kMinCardCellLogicalDip = 400;
+
+int GridColumnsFor(int logicalWidth, size_t cardCount) {
+  if (cardCount == 0) return 1;
+  const int usable = std::max(0, logicalWidth - 2 * kGridMarginLogicalDip);
+  const int columns = usable / kMinCardCellLogicalDip;
+  return std::clamp(columns, 1, static_cast<int>(cardCount));
+}
+
 class ProviderCard final : public ModernPanel {
  public:
   ProviderCard(wxWindow* parent, const ProviderSnapshot& snapshot, const PresentationTheme& theme)
@@ -121,6 +134,11 @@ class ProviderCard final : public ModernPanel {
 
   void AddMetric(wxBoxSizer* root, const Metric& metric) {
     if (metric.kind == MetricKind::RemainingPercent) return;
+    // Drop Ollama's verbose per-model usage listing (memory rows and per-model
+    // request counts). Keep the real quota metrics and their dates so cards stay
+    // compact.
+    if (metric.kind == MetricKind::ResourceMemory) return;
+    if (metric.kind == MetricKind::Requests) return;
     auto* metricPanel = new ModernPanel(this, theme_, true);
     metricPanel->SetName(wxS("Métrica ") + MetricLabel(metric));
     auto* layout = new wxBoxSizer(wxVERTICAL);
@@ -173,7 +191,10 @@ class ProviderCard final : public ModernPanel {
       root->Add(account, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceLg);
     }
 
-    const auto visible = [](const Metric& metric) { return metric.kind != MetricKind::RemainingPercent; };
+    const auto visible = [](const Metric& metric) {
+      return metric.kind != MetricKind::RemainingPercent && metric.kind != MetricKind::ResourceMemory &&
+             metric.kind != MetricKind::Requests;
+    };
     if (std::none_of(snapshot_.metrics.begin(), snapshot_.metrics.end(), visible)) {
       root->Add(new SemanticNotice(this, wxS("— Métricas no disponibles"), StatusTone::Neutral, theme_), 0,
                 wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceLg);
@@ -201,6 +222,7 @@ DashboardFrame::DashboardFrame(VoidCallback refreshAll, VoidCallback openSetting
       refreshAll_(std::move(refreshAll)), openSettings_(std::move(openSettings)), alwaysOnTop_(std::move(alwaysOnTop)) {
   ApplyApplicationIcon(*this);
   SetMinSize(wxSize(FromDIP(440), FromDIP(390)));
+  Maximize();
   theme_ = ResolveTheme(this);
   SetBackgroundColour(theme_.canvas);
   auto* root = new wxBoxSizer(wxVERTICAL);
@@ -253,18 +275,19 @@ DashboardFrame::DashboardFrame(VoidCallback refreshAll, VoidCallback openSetting
   scroll->SetBackgroundColour(theme_.canvas);
   scroll->SetScrollRate(0, FromDIP(12));
   cardsPanel_ = scroll;
-  cardsSizer_ = new wxBoxSizer(wxVERTICAL);
-  cardsPanel_->SetSizer(cardsSizer_);
   root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, theme_.spaceMd);
   SetSizer(root);
   Bind(wxEVT_CLOSE_WINDOW, &DashboardFrame::OnClose, this);
   Bind(wxEVT_SYS_COLOUR_CHANGED, &DashboardFrame::OnSystemColourChanged, this);
   Bind(wxEVT_SIZE, &DashboardFrame::OnSize, this);
   UpdateResponsiveLayout();
+  RebuildCards();
 }
 
 void DashboardFrame::SetSnapshots(const std::vector<ProviderSnapshot>& snapshots) {
   snapshots_ = snapshots;
+  const auto logicalWidth = ToDIP(GetClientSize()).x;
+  gridColumns_ = GridColumnsFor(logicalWidth, snapshots_.size());
   RebuildCards();
 }
 
@@ -309,6 +332,11 @@ void DashboardFrame::ApplyPresentationTheme() {
 
 void DashboardFrame::UpdateResponsiveLayout() {
   const auto logicalWidth = ToDIP(GetClientSize()).x;
+  const int columns = GridColumnsFor(logicalWidth, snapshots_.size());
+  if (columns != gridColumns_) {
+    gridColumns_ = columns;
+    RebuildCards();
+  }
   const bool compact = UseCompactLayout(logicalWidth);
   if (compact == compactLayout_) return;
   compactLayout_ = compact;
@@ -334,8 +362,7 @@ void DashboardFrame::OnSystemColourChanged(wxSysColourChangedEvent& event) {
 
 void DashboardFrame::OnSize(wxSizeEvent& event) {
   UpdateResponsiveLayout();
-  cardsPanel_->Layout();
-  cardsPanel_->FitInside();
+  FitCardsPanel();
   RefreshTree(appBar_);
   RefreshTree(cardsPanel_);
   Refresh(true);
@@ -344,19 +371,43 @@ void DashboardFrame::OnSize(wxSizeEvent& event) {
 
 void DashboardFrame::RebuildCards() {
   Freeze();
-  cardsSizer_->Clear(true);
+  // Build a fresh grid sizer, but FIRST destroy any previous provider cards so a
+  // rebuild never leaves duplicated/ghost panels behind. Replacing the sizer alone
+  // keeps the old card windows as orphaned children of the panel, which keeps
+  // painting underneath the new ones (the cause of duplicate panels hiding values).
+  if (cardsPanel_ != nullptr) {
+    if (wxSizer* previous = cardsPanel_->GetSizer(); previous != nullptr) {
+      previous->Clear(true);               // delete old card windows and clear items
+      cardsPanel_->SetSizer(nullptr, false);
+      delete previous;
+    }
+    cardsPanel_->DestroyChildren();        // remove any remaining orphan child windows
+  }
+  // Multi-column grid: cells occupy a strict row-major layout so panels can never
+  // share space. FitCardsPanel() keeps every card at its content width (values
+  // fully visible), and the window auto-maximizes so all panels fit on screen.
+  const int columns = std::max(1, gridColumns_);
+  auto* grid = new wxGridSizer(columns, 0, 0);
   if (snapshots_.empty()) {
-    cardsSizer_->Add(new SemanticNotice(cardsPanel_, wxS("— No hay proveedores configurados. Abra Configuración."),
-                                        StatusTone::Neutral, theme_),
-                     0, wxEXPAND | wxALL, theme_.spaceSm);
+    grid->Add(new SemanticNotice(cardsPanel_, wxS("— No hay proveedores configurados. Abra Configuración."),
+                                 StatusTone::Neutral, theme_),
+              1, wxEXPAND | wxALL, theme_.spaceSm);
+  } else {
+    for (const auto& snapshot : snapshots_) {
+      grid->Add(new ProviderCard(cardsPanel_, snapshot, theme_), 1, wxEXPAND | wxALL, theme_.spaceSm);
+    }
   }
-  for (const auto& snapshot : snapshots_) {
-    cardsSizer_->Add(new ProviderCard(cardsPanel_, snapshot, theme_), 0, wxEXPAND | wxALL, theme_.spaceSm);
-  }
+  cardsPanel_->SetSizer(grid);
+  cardsSizer_ = grid;
+  FitCardsPanel();
+  Thaw();
+}
+
+void DashboardFrame::FitCardsPanel() {
+  // Size the scroll area to the grid's content so card fields are never clipped;
+  // a vertical scrollbar appears only when the grid is taller than the visible area.
   cardsPanel_->Layout();
   cardsPanel_->FitInside();
-  Layout();
-  Thaw();
 }
 
 void DashboardFrame::OnClose(wxCloseEvent& event) {

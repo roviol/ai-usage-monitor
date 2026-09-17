@@ -10,6 +10,7 @@
 #include <wx/checkbox.h>
 #include <wx/choice.h>
 #include <wx/dialog.h>
+#include <wx/sizer.h>
 #include <wx/display.h>
 #include <wx/frame.h>
 #include <wx/listbox.h>
@@ -40,6 +41,7 @@ class DashboardFrame final : public wxFrame {
 
  private:
   void RebuildCards();
+  void FitCardsPanel();
   void ApplyPresentationTheme();
   void UpdateResponsiveLayout();
   void OnSystemColourChanged(wxSysColourChangedEvent& event);
@@ -51,7 +53,7 @@ class DashboardFrame final : public wxFrame {
   TopCallback alwaysOnTop_;
   std::vector<ProviderSnapshot> snapshots_;
   wxPanel* cardsPanel_{nullptr};
-  wxBoxSizer* cardsSizer_{nullptr};
+  wxSizer* cardsSizer_{nullptr};
   ModernPanel* appBar_{nullptr};
   wxBoxSizer* appBarSizer_{nullptr};
   wxStaticText* title_{nullptr};
@@ -61,6 +63,7 @@ class DashboardFrame final : public wxFrame {
   wxCheckBox* alwaysOnTopCheck_{nullptr};
   SemanticNotice* environmentNotice_{nullptr};
   PresentationTheme theme_;
+  int gridColumns_{1};
   bool compactLayout_{false};
 };
 
