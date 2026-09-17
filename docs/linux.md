@@ -97,3 +97,28 @@ The overlay must be re-created after the compositor starts to pick up
 transparency (toggle it off and on from Settings, or restart the app) —
 `wxTopLevelWindow::SetTransparent()` negotiates the RGBA visual once, before
 the window is first shown.
+
+## Verificación del cambio `modernize-desktop-ui` (Linux)
+
+Estado de las gates de release para la modernización de la interfaz,
+verificadas en una máquina Linux con sesión XFCE/headless bajo Xvfb:
+
+| Gate | Estado |
+|------|--------|
+| Build de release con `-Werror` (warnings-as-errors) | ✓ pasa |
+| Unit tests (`ai-usage-unit-tests`) | ✓ 13/13 |
+| Dashboard wxGTK en tema claro/oscuro bajo fixturas | ✓ capturas light/dark distintas (luminancia media 246 vs 43) |
+| AppImage Linux (`AIUsageMonitor-0.2.0-x86_64.AppImage`) | ✓ construido (19,7 MiB) |
+| Tamaño del artefacto ≤ 45 MiB | ✓ 19 696 120 bytes |
+| RSS ociosa a los 60 s ≤ 50 MiB | ✓ 14 872 KiB |
+
+Quedan **pendientes de entornos no disponibles en esta máquina**:
+- Capturas de revisión en **Windows** (lado Windows de la tarea 4.4).
+- Build y suite completa en **Windows** (tarea 5.1).
+- Smoke checks en escritorios **GNOME/AppIndicator** y **KDE Plasma**
+  con host StatusNotifier (tray, tema de escritorio, layout compacto y
+  siempre-al-frente) (tarea 5.3).
+- Rebuild del **paquete portable de Windows** y sus gates (tarea 5.4).
+
+Estas tareas deberán ejecutarse en un host Windows y en sesiones GNOME/KDE
+reales antes de declarar el cambio completo y archivarlo.
