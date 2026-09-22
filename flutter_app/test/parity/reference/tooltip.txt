@@ -1,0 +1,1 @@
+IA: healthy | Codex: 25% 1h | Ollama: 1 modelo 1h

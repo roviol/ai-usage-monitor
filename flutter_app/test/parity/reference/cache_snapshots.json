@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "snapshots": [
+    {
+      "accountLabel": "dev@example.com",
+      "displayName": "Codex",
+      "freshness": "fresh",
+      "health": "healthy",
+      "kind": "codex",
+      "metrics": [
+        {
+          "availability": "available",
+          "kind": "used-percent",
+          "label": "Codex principal usado",
+          "provenance": "provider-reported",
+          "resetsAt": 1785960000,
+          "scope": "rolling-window",
+          "unit": "percent",
+          "value": "25",
+          "windowSeconds": 18000
+        }
+      ],
+      "observedAt": 1785942000,
+      "providerId": "codex"
+    },
+    {
+      "accountLabel": "",
+      "displayName": "Ollama",
+      "freshness": "fresh",
+      "health": "healthy",
+      "kind": "ollama",
+      "metrics": [
+        {
+          "availability": "available",
+          "kind": "loaded-models",
+          "label": "Modelos cargados",
+          "provenance": "provider-reported",
+          "scope": "current-observation",
+          "unit": "count",
+          "value": "1"
+        }
+      ],
+      "observedAt": 1785942000,
+      "providerId": "ollama"
+    }
+  ]
+}

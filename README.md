@@ -107,6 +107,27 @@ aplicación conserva el dashboard normal. Consulte `docs/linux.md` para compilar
 y crear el AppImage. La matriz de CI valida Windows y Ubuntu; la disponibilidad
 real del icono depende de GNOME/KDE y sus extensiones StatusNotifier.
 
+## Aplicación Flutter (segunda implementación)
+
+`flutter_app/` contiene una segunda implementación en Flutter/Dart con paridad
+funcional respecto a la aplicación C++: mismos proveedores y parsers, mismas
+métricas y errores, scheduler con el mismo backoff, y los mismos archivos
+`settings.json`/`cache.json` (mismo esquema, nombres de campo, orden de
+serialización y tokens de credenciales protegidos). La presentación puede
+diferir en estilo; el comportamiento y los datos mostrados no.
+
+- Compilar: `cd flutter_app && flutter build linux --release` (o `flutter build windows`).
+- Probar: `flutter analyze && flutter test`.
+- Empaquetar: `./scripts/package-flutter-linux.sh [versión]` (o
+  `scripts/package-flutter-windows.ps1` en Windows).
+- Comparación de paridad: el corpus en `flutter_app/test/parity/reference/`
+  se genera con `./scripts/parity-dump-reference.sh` y se verifica con
+  `flutter test test/parity`; el procedimiento manual (ambas aplicaciones
+  apuntando a un mismo `AI_USAGE_DATA_DIR`) está en
+  `flutter_app/test/parity/README.md`.
+- Ambas aplicaciones pueden ejecutarse a la vez: el nombre de instancia única
+  de Flutter es distinto del de la aplicación C++.
+
 ## Privacidad y refresco
 
 No se leen archivos privados de autenticación de los clientes. Codex usa su

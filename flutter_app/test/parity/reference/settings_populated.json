@@ -1,0 +1,32 @@
+{
+  "alwaysOnTop": false,
+  "overlay": {
+    "corner": "top-right",
+    "enabled": false,
+    "locked": true,
+    "margin": 12,
+    "monitor": "",
+    "opacity": 90,
+    "suppressFullscreen": false,
+    "visible": true
+  },
+  "providers": [
+    {
+      "allowLoopbackHttp": false,
+      "balancePath": "/user/balance",
+      "baseUrl": "https://api.deepseek.com",
+      "budget": "20.00",
+      "enabled": false,
+      "encryptedApiKey": "dpapi:REF",
+      "encryptedCloudKey": "",
+      "executable": "",
+      "id": "deepseek",
+      "jsonPointers": {},
+      "kind": "deepseek",
+      "name": "DeepSeek",
+      "usagePath": ""
+    }
+  ],
+  "refreshMinutes": 12,
+  "schemaVersion": 1
+}
