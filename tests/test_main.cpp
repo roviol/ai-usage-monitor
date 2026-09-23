@@ -273,6 +273,125 @@ void TestClaudeParser() {
   CHECK(!ParseClaudeUsageText(config, "ordinary model response", Clock::now()).has_value());
 }
 
+// The fixture line publishes its reset time in America/Santo_Domingo while
+// the test process runs in a different zone; the parser must convert the
+// wall clock with the published zone instead of the system one, so the
+// stored instant lands on the same wall clock in the published zone.
+void TestClaudeParserCrossTimezone() {
+#ifdef _WIN32
+  const char* previous = nullptr;
+  std::size_t length = 0;
+  if (_dupenv_s(&length == nullptr ? &length : &length, &length, "TZ") == 0 && length > 0) {
+    // handled below
+  }
+#endif
+  // Run the body in a zone different from the published one.
+  const auto usage = [&] {
+#ifdef _WIN32
+    _putenv_s("TZ", "America/New_York");
+    _tzset();
+#else
+    setenv("TZ", "America/New_York", 1);
+    tzset();
+#endif
+    try {
+      ProviderConfig config{"claude", "Claude", ProviderKind::ClaudeSubscription, true};
+      std::tm observedLocal{};
+      observedLocal.tm_year = 2026 - 1900;
+      observedLocal.tm_mon = 7;
+      observedLocal.tm_mday = 5;
+      observedLocal.tm_hour = 14;
+      observedLocal.tm_isdst = -1;
+      const auto observedAt = Clock::from_time_t(std::mktime(&observedLocal));
+      return ParseClaudeUsageText(config, ReadFixture("claude_usage_screen.txt"), observedAt);
+    } catch (...) {
+      return std::optional<ProviderSnapshot>{};
+    }
+  }();
+  // Restore the process timezone before asserting: the rest of the suite
+  // assumes the ambient zone.
+#ifdef _WIN32
+  _putenv_s("TZ", "");
+  _tzset();
+#else
+  unsetenv("TZ");
+  tzset();
+#endif
+  CHECK(usage.has_value());
+  if (!usage.has_value()) return;
+  CHECK(usage->metrics[0].resetsAt.has_value());
+  // Claude wall clock 2026-08-05 19:10 in America/Santo_Domingo (UTC-4, no
+  // DST) is 23:10 UTC.
+  const auto sessionReset = Clock::to_time_t(*usage->metrics[0].resetsAt);
+  std::tm utcParts{};
+#ifdef _WIN32
+  CHECK(gmtime_s(&utcParts, &sessionReset) == 0);
+#else
+  CHECK(gmtime_r(&sessionReset, &utcParts) != nullptr);
+#endif
+  CHECK(utcParts.tm_year == 2026 - 1900);
+  CHECK(utcParts.tm_mon == 7);
+  CHECK(utcParts.tm_mday == 5);
+  CHECK(utcParts.tm_hour == 23);
+  CHECK(utcParts.tm_min == 10);
+  // The weekly reset (2026-08-07 21:00 AST) is 2026-08-08 01:00 UTC.
+  const auto weeklyReset = Clock::to_time_t(*usage->metrics[2].resetsAt);
+#ifdef _WIN32
+  CHECK(gmtime_s(&utcParts, &weeklyReset) == 0);
+#else
+  CHECK(gmtime_r(&weeklyReset, &utcParts) != nullptr);
+#endif
+  CHECK(utcParts.tm_year == 2026 - 1900);
+  CHECK(utcParts.tm_mon == 7);
+  CHECK(utcParts.tm_mday == 8);
+  CHECK(utcParts.tm_hour == 1);
+  CHECK(utcParts.tm_min == 0);
+}
+
+// A reset line without a published zone keeps the historical behavior: the
+// wall clock is interpreted with the process timezone.
+void TestClaudeParserNoZone() {
+#ifdef _WIN32
+  _putenv_s("TZ", "UTC");
+  _tzset();
+#else
+  setenv("TZ", "UTC", 1);
+  tzset();
+#endif
+  std::optional<ProviderSnapshot> usage;
+  try {
+    ProviderConfig config{"claude", "Claude", ProviderKind::ClaudeSubscription, true};
+    std::tm observedLocal{};
+    observedLocal.tm_year = 2026 - 1900;
+    observedLocal.tm_mon = 7;
+    observedLocal.tm_mday = 5;
+    observedLocal.tm_hour = 18;
+    observedLocal.tm_isdst = -1;
+    const auto observedAt = Clock::from_time_t(std::mktime(&observedLocal));
+    usage = ParseClaudeUsageText(config,
+                                 "Current session: 37% used · resets Aug 5, 7:10pm", observedAt);
+  } catch (...) {
+  }
+#ifdef _WIN32
+  _putenv_s("TZ", "");
+  _tzset();
+#else
+  unsetenv("TZ");
+  tzset();
+#endif
+  CHECK(usage.has_value());
+  if (!usage.has_value()) return;
+  const auto sessionReset = Clock::to_time_t(*usage->metrics[0].resetsAt);
+  std::tm utcParts{};
+#ifdef _WIN32
+  CHECK(gmtime_s(&utcParts, &sessionReset) == 0);
+#else
+  CHECK(gmtime_r(&sessionReset, &utcParts) != nullptr);
+#endif
+  // Under a UTC process zone the wall clock is the instant.
+  CHECK(utcParts.tm_mon == 7 && utcParts.tm_mday == 5 && utcParts.tm_hour == 19 && utcParts.tm_min == 10);
+}
+
 void TestClaudeBridge() {
   FakeHttp http;
   FakeProcess process;
@@ -1101,6 +1220,78 @@ void TestPresentationRules() {
   CHECK(ScaleForDpi(0, 200) == 0);
 }
 
+void TestResetMetadataFormatting() {
+  const auto now = Clock::now();
+  Metric used{MetricKind::UsedPercent, "42", MetricUnit::Percent, MetricScope::RollingWindow};
+  used.resetsAt = now + std::chrono::minutes{5};
+  used.label = "Cuota mensual";
+  const auto text = FormatResetMetadata(used, now);
+  CHECK(text.starts_with("Reinicia "));
+  CHECK(text.find("reinicia en 5m") != std::string::npos);
+  // The separator between stamp and countdown.
+  CHECK(text.find("  \xC2\xB7  reinicia en") != std::string::npos);
+  // Hours and days formats share the overlay wording.
+  Metric weekly{MetricKind::UsedPercent, "10", MetricUnit::Percent, MetricScope::RollingWindow};
+  weekly.resetsAt = now + std::chrono::hours{30};
+  const auto weeklyText = FormatResetMetadata(weekly, now);
+  CHECK(weeklyText.find("reinicia en 1d 6h") != std::string::npos);
+  // A reset that already passed shows "reiniciando" next to the stamp
+  // instead of a negative countdown.
+  Metric past{MetricKind::UsedPercent, "91", MetricUnit::Percent, MetricScope::RollingWindow};
+  past.resetsAt = now - std::chrono::seconds{30};
+  const auto pastText = FormatResetMetadata(past, now);
+  CHECK(pastText.starts_with("Reinicia "));
+  CHECK(pastText.find("reiniciando") != std::string::npos);
+  // Unload wording for memory metrics.
+  Metric memory{MetricKind::ResourceMemory, "1234", MetricUnit::Bytes, MetricScope::CurrentObservation};
+  memory.resetsAt = now + std::chrono::minutes{3};
+  const auto memoryText = FormatResetMetadata(memory, now);
+  CHECK(memoryText.starts_with("Descarga "));
+  CHECK(memoryText.find("descarga en 3m") != std::string::npos);
+  // No reset: no metadata.
+  Metric none{MetricKind::UsedPercent, "1", MetricUnit::Percent, MetricScope::RollingWindow};
+  CHECK(FormatResetMetadata(none, now).empty());
+}
+
+// The card stamp must read the same clock the user's system shows: the same
+// reset rendered at two process timezones yields stamps that match each
+// zone's local rendering of one absolute instant.
+void TestResetMetadataLocalZone() {
+  const auto reset = TimePoint{std::chrono::seconds{1785942000}};  // 15:00 UTC
+  Metric used{MetricKind::UsedPercent, "42", MetricUnit::Percent, MetricScope::RollingWindow};
+  used.resetsAt = reset;
+  const auto now = TimePoint{std::chrono::seconds{1785942000 - 60}};
+#ifdef _WIN32
+  _putenv_s("TZ", "America/New_York");
+  _tzset();
+#else
+  setenv("TZ", "America/New_York", 1);
+  tzset();
+#endif
+  const auto newYorkText = FormatResetMetadata(used, now);
+#ifdef _WIN32
+  _putenv_s("TZ", "Europe/Madrid");
+  _tzset();
+#else
+  setenv("TZ", "Europe/Madrid", 1);
+  tzset();
+#endif
+  const auto madridText = FormatResetMetadata(used, now);
+#ifdef _WIN32
+  _putenv_s("TZ", "");
+  _tzset();
+#else
+  unsetenv("TZ");
+  tzset();
+#endif
+  // 15:00 UTC is 11:00 in New York (EDT) and 17:00 in Madrid (CEST).
+  CHECK(newYorkText.starts_with("Reinicia 2026-08-05 11:00:00"));
+  CHECK(madridText.starts_with("Reinicia 2026-08-05 17:00:00"));
+  // Both are the same instant, so both show the same countdown.
+  CHECK(newYorkText.find("reinicia en 1m") != std::string::npos);
+  CHECK(madridText.find("reinicia en 1m") != std::string::npos);
+}
+
 void TestSchedulerConcurrencyAndCoalescing() {
   RefreshTracker parallel;
   std::mutex deliveredMutex;
@@ -1303,6 +1494,7 @@ int main(int argc, char** argv) {
       {"domain", "unit", TestDomainValidation}, {"aggregate", "unit", TestAggregate},
       {"codex", "fixture", TestCodexParser}, {"deepseek", "fixture", TestDeepSeekParser},
       {"claude", "fixture", TestClaudeParser}, {"claude-bridge", "fixture", TestClaudeBridge},
+      {"claude-tz", "unit", TestClaudeParserCrossTimezone}, {"claude-nozone", "unit", TestClaudeParserNoZone},
       {"generic", "fixture", TestGenericParser}, {"ollama", "fixture", TestOllamaParser},
       {"ollama-provider", "fixture", TestOllamaProvider}, {"settings", "unit", TestSettingsAndCache},
       {"ollama-settings", "unit", TestOllamaSettingsAndCache},
@@ -1317,6 +1509,8 @@ int main(int argc, char** argv) {
       {"tooltip", "unit", TestTooltip},
       {"overlay", "unit", TestOverlayPresentationModel},
       {"presentation", "unit", TestPresentationRules},
+      {"reset-metadata", "unit", TestResetMetadataFormatting},
+      {"reset-metadata-tz", "unit", TestResetMetadataLocalZone},
       {"scheduler", "unit", TestSchedulerConcurrencyAndCoalescing},
       {"scheduler-clock", "unit", TestSchedulerFakeClockCadence},
       {"scheduler-failures", "unit", TestSchedulerFakeClockFailures}};

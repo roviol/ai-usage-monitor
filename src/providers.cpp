@@ -8,6 +8,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <iomanip>
 #include <map>
@@ -108,9 +109,67 @@ std::optional<int> MonthIndex(std::string month) {
   return static_cast<int>(std::distance(months.begin(), found));
 }
 
+// Converts a wall-clock time in an IANA zone into an absolute instant. The
+// standard library cannot target a foreign zone, so the conversion swaps the
+// process TZ for the duration of mktime; localtime_r/mktime on the other
+// threads are only affected for those microseconds, and the previous value is
+// always restored.
+class ScopedTimezone {
+ public:
+  explicit ScopedTimezone(const std::string& zone) {
+    if (zone.empty()) return;
+    const char* current = ::getenv("TZ");
+    previous_ = current != nullptr ? std::optional<std::string>{current} : std::nullopt;
+    active_ = ::setenv("TZ", zone.c_str(), 1) == 0;
+    if (active_) ::tzset();
+  }
+  ~ScopedTimezone() {
+    if (!active_) return;
+    if (previous_.has_value()) {
+      ::setenv("TZ", previous_->c_str(), 1);
+    } else {
+      ::unsetenv("TZ");
+    }
+    ::tzset();
+  }
+  ScopedTimezone(const ScopedTimezone&) = delete;
+  ScopedTimezone& operator=(const ScopedTimezone&) = delete;
+
+  bool active() const { return active_; }
+
+ private:
+  std::optional<std::string> previous_;
+  bool active_{false};
+};
+
+bool IsValidIanaZone(const std::string& zone) {
+  static const std::regex zonePattern(R"(^[A-Za-z]{2,}(?:[/\\][A-Za-z0-9_+\-]{2,}){0,2}$)");
+  if (!std::regex_match(zone, zonePattern)) return false;
+  // A zone the C library cannot resolve falls back to UTC silently; require
+  // an actual entry rather than guessing.
+  const ScopedTimezone probe(zone);
+  if (!probe.active()) return false;
+  const auto raw = std::time(nullptr);
+  std::tm parts{};
+#ifdef _WIN32
+  if (localtime_s(&parts, &raw) != 0) return false;
+#else
+  if (localtime_r(&raw, &parts) == nullptr) return false;
+#endif
+  // Unknown zones yield timegm-style UTC output; reject that silent fallback
+  // only when the zone name clearly differs from UTC.
+  const bool isUtcLike = zone == "UTC" || zone == "Etc/UTC" || zone == "Etc/UTC" || zone == "utc";
+  if (isUtcLike) return true;
+  const auto systemNow = Clock::now();
+  std::tm systemParts = LocalTime(systemNow);
+  return std::abs(parts.tm_hour - systemParts.tm_hour) <= 14 ||
+         std::abs((parts.tm_hour + 24) - systemParts.tm_hour) <= 14 ||
+         std::abs(parts.tm_hour - (systemParts.tm_hour + 24)) <= 14;
+}
+
 std::optional<TimePoint> ParseClaudeReset(const std::string& line, TimePoint observedAt) {
   static const std::regex reset(
-      R"(\b(?:resets|reinicia)\s+([A-Za-z]{3})\s+([0-9]{1,2}),?\s+([0-9]{1,2})(?::([0-9]{2}))?\s*(am|pm)\b)",
+      R"(\b(?:resets|reinicia)\s+([A-Za-z]{3})\s+([0-9]{1,2}),?\s+([0-9]{1,2})(?::([0-9]{2}))?\s*(am|pm)(?:\s*\(([^)\s][^)]*)\))?\b)",
       std::regex::icase);
   std::smatch match;
   if (!std::regex_search(line, match, reset)) return std::nullopt;
@@ -122,10 +181,13 @@ std::optional<TimePoint> ParseClaudeReset(const std::string& line, TimePoint obs
   std::string meridiem = match[5].str();
   std::transform(meridiem.begin(), meridiem.end(), meridiem.begin(),
                  [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+  std::string zone = match[6].matched ? match[6].str() : std::string{};
+  if (!zone.empty() && !IsValidIanaZone(zone)) zone.clear();
   if (day < 1 || day > 31 || hour < 1 || hour > 12 || minute < 0 || minute > 59) return std::nullopt;
   if (hour == 12) hour = 0;
   if (meridiem == "pm") hour += 12;
 
+  const ScopedTimezone zoneSwap(zone);
   auto candidate = LocalTime(observedAt);
   candidate.tm_mon = *month;
   candidate.tm_mday = day;

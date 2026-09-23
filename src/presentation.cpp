@@ -1,7 +1,13 @@
 #include "ai_usage/presentation.h"
 
+#include "ai_usage/overlay.h"
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 
 namespace ai_usage {
 namespace {
@@ -40,6 +46,28 @@ bool UseCompactLayout(int logicalWidth, int breakpoint) { return logicalWidth < 
 int ScaleForDpi(int logicalPixels, int scalePercent) {
   if (logicalPixels <= 0 || scalePercent <= 0) return 0;
   return static_cast<int>(std::lround(logicalPixels * scalePercent / 100.0));
+}
+
+std::string FormatResetMetadata(const Metric& metric, TimePoint now) {
+  if (!metric.resetsAt.has_value()) return {};
+  const auto raw = Clock::to_time_t(*metric.resetsAt);
+  std::tm parts{};
+#ifdef _WIN32
+  if (localtime_s(&parts, &raw) != 0) return {};
+#else
+  if (localtime_r(&raw, &parts) == nullptr) return {};
+#endif
+  std::ostringstream stamp;
+  stamp << std::put_time(&parts, "%Y-%m-%d %H:%M:%S");
+  const auto prefix = metric.kind == MetricKind::ResourceMemory ? "Descarga " : "Reinicia ";
+  auto text = prefix + stamp.str();
+  const auto countdown = metric.kind == MetricKind::ResourceMemory
+                             ? FormatUnloadCountdown(metric.resetsAt, now)
+                             : FormatResetCountdown(metric.resetsAt, now);
+  if (!countdown.empty()) {
+    text += "  \xC2\xB7  " + countdown;
+  }
+  return text;
 }
 
 }  // namespace ai_usage

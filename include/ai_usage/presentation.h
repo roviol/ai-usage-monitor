@@ -1,5 +1,9 @@
 #pragma once
 
+#include "ai_usage/domain.h"
+
+#include <string>
+
 namespace ai_usage {
 
 struct PresentationRgb {
@@ -15,5 +19,10 @@ PresentationRgb EnsureTextContrast(PresentationRgb preferred, PresentationRgb ba
                                    PresentationRgb darkFallback = {18, 24, 38}, double minimumRatio = 4.5);
 bool UseCompactLayout(int logicalWidth, int breakpoint = 640);
 int ScaleForDpi(int logicalPixels, int scalePercent);
+
+// The reset line shown on a dashboard card: "Reinicia <system-local time>  ·
+//  reinicia en Xm". Shared by the card and the accessibility labels so both
+// read identically; clock supplies the current moment for the countdown.
+std::string FormatResetMetadata(const Metric& metric, TimePoint now);
 
 }  // namespace ai_usage

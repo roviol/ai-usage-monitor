@@ -3,6 +3,8 @@
 #include "app_icon.h"
 
 #include "ai_usage/tooltip.h"
+#include "ai_usage/overlay.h"
+#include "ai_usage/presentation.h"
 
 #include <wx/button.h>
 #include <wx/checkbox.h>
@@ -88,13 +90,9 @@ wxString MetricLabel(const Metric& metric) {
 }
 
 wxString MetricMetadata(const Metric& metric) {
-  wxString metadata;
-  if (metric.resetsAt.has_value()) {
-    wxDateTime reset(Clock::to_time_t(*metric.resetsAt));
-    metadata = metric.kind == MetricKind::ResourceMemory
-                   ? wxS("Descarga ") + reset.FormatISOCombined(' ')
-                   : wxS("Reinicia ") + reset.FormatISOCombined(' ');
-  }
+  // Shared with the accessibility labels; the stamp renders in the system
+  // local timezone and the countdown reuses the overlay wording.
+  auto metadata = wxString::FromUTF8(FormatResetMetadata(metric, Clock::now()));
   if (metric.provenance != Provenance::ProviderReported) {
     if (!metadata.empty()) metadata += wxS("  ·  ");
     metadata += ProvenanceLabel(metric.provenance);
@@ -154,6 +152,10 @@ class ProviderCard final : public ModernPanel {
     value->SetForegroundColour(theme_.text);
     value->SetBackgroundColour(theme_.elevated);
     value->SetName(MetricLabel(metric) + wxS(" ") + formatted);
+    // A scaled font does not update wxStaticText's cached best size (GTK keeps
+    // the base-font 19px row and clips the glyphs). Reserve the real extent so
+    // the sizer reserves the full glyph height and width.
+    value->SetMinSize(value->GetTextExtent(formatted));
     layout->Add(value, 0, wxLEFT | wxRIGHT | wxTOP, theme_.spaceMd);
 
     if (metric.availability == Availability::Available && metric.unit == MetricUnit::Percent) {
