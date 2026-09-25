@@ -58,6 +58,8 @@ add_executable(ai-usage-monitor WIN32
 )
 if(WIN32)
   target_sources(ai-usage-monitor PRIVATE assets/application-icon.rc)
+else()
+  target_sources(ai-usage-monitor PRIVATE src/console/console_dashboard.cpp)
 endif()
 target_include_directories(ai-usage-monitor PRIVATE include src/ui assets)
 target_link_libraries(ai-usage-monitor PRIVATE ai_usage_core ai_usage_platform wx::core wx::base)

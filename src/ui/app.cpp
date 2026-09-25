@@ -1,11 +1,16 @@
 #include "ui.h"
 
+#ifdef __linux__
+#include "ai_usage/console/console_dashboard.h"
+#endif
+
 #include <wx/filename.h>
 #include <wx/stdpaths.h>
 #include <wx/utils.h>
 
 #include <algorithm>
 #include <fstream>
+#include <string_view>
 
 namespace ai_usage::ui {
 namespace {
@@ -409,4 +414,15 @@ void MonitorApp::OnQueryEndSession(wxCloseEvent& event) {
 
 }  // namespace ai_usage::ui
 
-wxIMPLEMENT_APP(ai_usage::ui::MonitorApp);
+wxIMPLEMENT_APP_NO_MAIN(ai_usage::ui::MonitorApp);
+
+int main(int argc, char** argv) {
+#ifdef __linux__
+  for (int i = 1; i < argc; ++i) {
+    if (std::string_view(argv[i]) == "--console") {
+      return ai_usage::console::RunConsoleDashboard(argc, argv);
+    }
+  }
+#endif
+  return wxEntry(argc, argv);
+}
