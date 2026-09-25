@@ -8,6 +8,8 @@
 #include "ai_usage/scheduler.h"
 #include "ai_usage/tooltip.h"
 
+#include <nlohmann/json.hpp>
+
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -17,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <ctime>
@@ -25,6 +28,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <string_view>
 
 namespace ai_usage::console {
 namespace {
@@ -215,6 +219,57 @@ bool VisibleMetric(const Metric& metric) {
 
 }  // namespace
 
+namespace {
+
+using Json = nlohmann::json;
+
+std::string ToIso8601Utc(TimePoint value) {
+  const auto raw = Clock::to_time_t(value);
+  std::tm parts{};
+  gmtime_r(&raw, &parts);
+  std::ostringstream out;
+  out << std::put_time(&parts, "%Y-%m-%dT%H:%M:%SZ");
+  return out.str();
+}
+
+Json MetricToJson(const Metric& metric) {
+  Json result{{"kind", ToString(metric.kind)},   {"label", MetricLabel(metric)},
+              {"value", metric.value},           {"unit", ToString(metric.unit)},
+              {"scope", ToString(metric.scope)}, {"provenance", ToString(metric.provenance)},
+              {"availability", ToString(metric.availability)}};
+  if (metric.resetsAt.has_value()) result["resetsAt"] = ToIso8601Utc(*metric.resetsAt);
+  if (metric.window.has_value()) result["windowSeconds"] = metric.window->count();
+  return result;
+}
+
+Json SnapshotToJson(const ProviderSnapshot& snapshot) {
+  Json metrics = Json::array();
+  for (const auto& metric : snapshot.metrics) metrics.push_back(MetricToJson(metric));
+  Json result{{"providerId", snapshot.providerId},
+              {"displayName", snapshot.displayName},
+              {"kind", ToString(snapshot.kind)},
+              {"health", ToString(snapshot.health)},
+              {"freshness", ToString(snapshot.freshness)},
+              {"observedAt", snapshot.observedAt == TimePoint{} ? Json(nullptr) : Json(ToIso8601Utc(snapshot.observedAt))},
+              {"accountLabel", snapshot.accountLabel},
+              {"metrics", metrics}};
+  if (snapshot.error.has_value()) {
+    result["error"] = Json{{"code", snapshot.error->code}, {"message", snapshot.error->message},
+                           {"retryable", snapshot.error->transient}};
+  } else {
+    result["error"] = nullptr;
+  }
+  return result;
+}
+
+}  // namespace
+
+std::string SnapshotsToJson(const std::vector<ProviderSnapshot>& snapshots) {
+  Json array = Json::array();
+  for (const auto& snapshot : snapshots) array.push_back(SnapshotToJson(snapshot));
+  return array.dump();
+}
+
 std::string RenderProgressBar(int usedPercent, int width) {
   const int clampedPercent = std::clamp(usedPercent, 0, 100);
   const int clampedWidth = std::max(width, 4);
@@ -345,31 +400,188 @@ std::vector<std::unique_ptr<IUsageProvider>> BuildProviders(const Settings& sett
   return providers;
 }
 
-}  // namespace
+enum class OutputFormat { Text, Json };
 
-int RunConsoleDashboard(int /*argc*/, char** argv) {
-  const auto executable = std::filesystem::path(argv != nullptr && argv[0] != nullptr ? argv[0] : "");
-  const auto paths = ResolveDataPaths(executable);
+struct CliOptions {
+  bool once{false};
+  OutputFormat format{OutputFormat::Text};
+  bool invalidFormat{false};
+  std::string invalidFormatValue;
+};
 
-  auto instanceSignal = CreatePlatformSingleInstanceSignal(paths.root);
-  if (instanceSignal->IsAnotherRunning()) {
-    instanceSignal->SignalActivation();
-    std::cerr << "AI Usage Monitor ya se está ejecutando; revise el icono de bandeja o la consola activa.\n";
-    return 1;
+CliOptions ParseCliOptions(int argc, char** argv) {
+  CliOptions options;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg = argv[i] != nullptr ? argv[i] : "";
+    if (arg == "--once") {
+      options.once = true;
+    } else if (arg == "--format" && i + 1 < argc) {
+      const std::string_view value = argv[++i] != nullptr ? argv[i] : "";
+      if (value == "text") {
+        options.format = OutputFormat::Text;
+      } else if (value == "json") {
+        options.format = OutputFormat::Json;
+      } else {
+        options.invalidFormat = true;
+        options.invalidFormatValue = std::string(value);
+      }
+    }
   }
-  (void)instanceSignal->ConsumeActivation();
+  return options;
+}
 
-  const auto loaded = LoadSettings(paths);
-  Settings settings = loaded.settings;
+// Shared setup used by both the interactive loop and one-shot mode: resolves data paths, enforces
+// the single-instance lock, loads settings, and constructs the platform HTTP/process/secret
+// backends providers depend on. Returns nullopt (after printing an error and setting `exitCode`)
+// if the process should exit immediately instead of proceeding.
+struct ConsoleSession {
+  DataPaths paths;
+  Settings settings;
+  std::unique_ptr<IHttpClient> http;
+  std::unique_ptr<IProcessRunner> process;
+  std::unique_ptr<ISecretStore> secrets;
+  std::unique_ptr<ISingleInstanceSignal> instanceSignal;
+};
+
+std::optional<ConsoleSession> PrepareConsoleSession(char** argv, int& exitCode) {
+  ConsoleSession session;
+  const auto executable = std::filesystem::path(argv != nullptr && argv[0] != nullptr ? argv[0] : "");
+  session.paths = ResolveDataPaths(executable);
+
+  session.instanceSignal = CreatePlatformSingleInstanceSignal(session.paths.root);
+  if (session.instanceSignal->IsAnotherRunning()) {
+    session.instanceSignal->SignalActivation();
+    std::cerr << "AI Usage Monitor ya se está ejecutando; revise el icono de bandeja o la consola activa.\n";
+    exitCode = 1;
+    return std::nullopt;
+  }
+  (void)session.instanceSignal->ConsumeActivation();
+
+  const auto loaded = LoadSettings(session.paths);
+  session.settings = loaded.settings;
   if (!loaded.warning.empty()) std::cerr << "Aviso: " << loaded.warning << "\n";
 
-  auto http = CreatePlatformHttpClient();
-  auto process = CreatePlatformProcessRunner();
-  auto secrets = CreatePlatformSecretStore();
+  session.http = CreatePlatformHttpClient();
+  session.process = CreatePlatformProcessRunner();
+  session.secrets = CreatePlatformSecretStore();
+  return session;
+}
 
+// Builds the ordered, per-configured-provider snapshot list from whatever has been observed so
+// far, synthesizing a placeholder "waiting" entry for providers with no snapshot yet.
+std::vector<ProviderSnapshot> OrderSnapshots(const Settings& settings,
+                                             const std::map<std::string, ProviderSnapshot>& snapshots) {
+  std::vector<ProviderSnapshot> ordered;
+  for (const auto& config : settings.providers) {
+    const auto found = snapshots.find(config.id);
+    if (found != snapshots.end()) {
+      ordered.push_back(found->second);
+    } else {
+      ProviderSnapshot snapshot;
+      snapshot.providerId = config.id;
+      snapshot.displayName = config.name;
+      snapshot.kind = config.kind;
+      snapshot.health = config.enabled ? Health::Partial : Health::Disabled;
+      snapshot.freshness = Freshness::NoData;
+      if (config.enabled) {
+        snapshot.error = ProviderError{"waiting", "Esperando primera actualización", true, std::nullopt};
+      }
+      ordered.push_back(std::move(snapshot));
+    }
+  }
+  return ordered;
+}
+
+constexpr std::chrono::seconds kOnceFetchTimeout{30};
+
+// Refreshes every enabled provider once and blocks until each has reported (or the bounded
+// timeout elapses), returning the resulting ordered snapshot list. Providers that time out fall
+// back to whatever was already loaded from cache, mirroring the "no data yet" placeholder the
+// interactive loop shows before its first successful refresh.
+std::vector<ProviderSnapshot> FetchSnapshotsOnce(const ConsoleSession& session) {
+  std::mutex snapshotsMutex;
+  std::condition_variable resultsReady;
+  std::map<std::string, ProviderSnapshot> snapshots;
+  for (auto& snapshot : LoadCache(session.paths)) snapshots[snapshot.providerId] = std::move(snapshot);
+
+  std::size_t enabledCount = 0;
+  for (const auto& config : session.settings.providers) {
+    if (config.enabled) ++enabledCount;
+  }
+
+  std::size_t reported = 0;
+  RefreshScheduler scheduler([&](const ProviderSnapshot& snapshot) {
+    std::lock_guard<std::mutex> lock(snapshotsMutex);
+    const auto found = snapshots.find(snapshot.providerId);
+    if (snapshot.health == Health::Error && found != snapshots.end() && !found->second.metrics.empty()) {
+      auto stale = found->second;
+      stale.freshness = Freshness::Stale;
+      stale.health = Health::Error;
+      stale.error = snapshot.error;
+      snapshots[snapshot.providerId] = std::move(stale);
+    } else {
+      snapshots[snapshot.providerId] = snapshot;
+    }
+    ++reported;
+    resultsReady.notify_all();
+  });
+  scheduler.SetProviders(BuildProviders(session.settings, *session.http, *session.process, *session.secrets));
+  scheduler.SetInterval(std::chrono::minutes{session.settings.refreshMinutes});
+  scheduler.Start();
+  scheduler.RefreshAll();
+
+  {
+    std::unique_lock<std::mutex> lock(snapshotsMutex);
+    resultsReady.wait_for(lock, kOnceFetchTimeout, [&] { return reported >= enabledCount; });
+  }
+  scheduler.Stop();
+
+  std::lock_guard<std::mutex> lock(snapshotsMutex);
+  auto ordered = OrderSnapshots(session.settings, snapshots);
+
+  std::vector<ProviderSnapshot> cache;
+  for (const auto& [id, value] : snapshots) {
+    (void)id;
+    if (!value.metrics.empty()) cache.push_back(value);
+  }
+  try {
+    SaveCache(session.paths, cache);
+  } catch (...) {
+  }
+  return ordered;
+}
+
+std::string RenderOneShotText(const std::vector<ProviderSnapshot>& snapshots, TimePoint now, int width) {
+  const int boxWidth = BoxWidthFor(width);
+  std::ostringstream out;
+  for (const auto& snapshot : snapshots) out << RenderProviderSection(snapshot, now, boxWidth) << "\n\n";
+  return out.str();
+}
+
+int RunOnceAndExit(const ConsoleSession& session, OutputFormat format) {
+  const auto snapshots = FetchSnapshotsOnce(session);
+
+  if (format == OutputFormat::Json) {
+    std::cout << SnapshotsToJson(snapshots) << "\n";
+  } else {
+    std::cout << RenderOneShotText(snapshots, Clock::now(), TerminalWidth());
+  }
+  std::cout.flush();
+
+  const bool anyEnabledError = std::any_of(
+      session.settings.providers.begin(), session.settings.providers.end(), [&](const ProviderConfig& config) {
+        if (!config.enabled) return false;
+        const auto found = std::find_if(snapshots.begin(), snapshots.end(),
+                                        [&](const ProviderSnapshot& s) { return s.providerId == config.id; });
+        return found != snapshots.end() && found->health == Health::Error;
+      });
+  return anyEnabledError ? 1 : 0;
+}
+
+int RunInteractiveDashboard(ConsoleSession session) {
   std::mutex snapshotsMutex;
   std::map<std::string, ProviderSnapshot> snapshots;
-  for (auto& snapshot : LoadCache(paths)) snapshots[snapshot.providerId] = std::move(snapshot);
+  for (auto& snapshot : LoadCache(session.paths)) snapshots[snapshot.providerId] = std::move(snapshot);
 
   std::atomic<bool> dirty{true};
   RefreshScheduler scheduler([&](const ProviderSnapshot& snapshot) {
@@ -386,8 +598,8 @@ int RunConsoleDashboard(int /*argc*/, char** argv) {
     }
     dirty.store(true);
   });
-  scheduler.SetProviders(BuildProviders(settings, *http, *process, *secrets));
-  scheduler.SetInterval(std::chrono::minutes{settings.refreshMinutes});
+  scheduler.SetProviders(BuildProviders(session.settings, *session.http, *session.process, *session.secrets));
+  scheduler.SetInterval(std::chrono::minutes{session.settings.refreshMinutes});
   scheduler.Start();
   scheduler.RefreshAll();
 
@@ -414,23 +626,7 @@ int RunConsoleDashboard(int /*argc*/, char** argv) {
       std::vector<ProviderSnapshot> ordered;
       {
         std::lock_guard<std::mutex> lock(snapshotsMutex);
-        for (const auto& config : settings.providers) {
-          const auto found = snapshots.find(config.id);
-          if (found != snapshots.end()) {
-            ordered.push_back(found->second);
-          } else {
-            ProviderSnapshot snapshot;
-            snapshot.providerId = config.id;
-            snapshot.displayName = config.name;
-            snapshot.kind = config.kind;
-            snapshot.health = config.enabled ? Health::Partial : Health::Disabled;
-            snapshot.freshness = Freshness::NoData;
-            if (config.enabled) {
-              snapshot.error = ProviderError{"waiting", "Esperando primera actualización", true, std::nullopt};
-            }
-            ordered.push_back(std::move(snapshot));
-          }
-        }
+        ordered = OrderSnapshots(session.settings, snapshots);
       }
       std::cout << RenderDashboard(ordered, now, TerminalWidth());
       std::cout.flush();
@@ -446,12 +642,29 @@ int RunConsoleDashboard(int /*argc*/, char** argv) {
       if (!value.metrics.empty()) cache.push_back(value);
     }
     try {
-      SaveCache(paths, cache);
+      SaveCache(session.paths, cache);
     } catch (...) {
     }
   }
   std::cout << "\nAI Usage Monitor (consola) detenido.\n";
   return 0;
+}
+
+}  // namespace
+
+int RunConsoleDashboard(int argc, char** argv) {
+  const auto options = ParseCliOptions(argc, argv);
+  if (options.invalidFormat) {
+    std::cerr << "Formato no soportado: \"" << options.invalidFormatValue << "\" (use \"text\" o \"json\").\n";
+    return 1;
+  }
+
+  int exitCode = 1;
+  auto session = PrepareConsoleSession(argv, exitCode);
+  if (!session.has_value()) return exitCode;
+
+  if (options.once) return RunOnceAndExit(*session, options.format);
+  return RunInteractiveDashboard(std::move(*session));
 }
 
 }  // namespace ai_usage::console

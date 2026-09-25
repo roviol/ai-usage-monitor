@@ -21,7 +21,11 @@ std::string RenderDashboard(const std::vector<ProviderSnapshot>& snapshots, Time
 
 // Entry point for `--console` mode on Linux. Loads the shared settings/cache, builds providers,
 // drives the shared scheduler, and renders the text dashboard until the user quits. Returns a
-// process exit code.
+// process exit code. Also accepts `--once` for a single-shot refresh-print-exit run, and
+// `--format text|json` to select the one-shot output format (defaults to `text`).
 int RunConsoleDashboard(int argc, char** argv);
+
+// Serializes provider snapshots to a single JSON array for scriptable one-shot output.
+std::string SnapshotsToJson(const std::vector<ProviderSnapshot>& snapshots);
 
 }  // namespace ai_usage::console
