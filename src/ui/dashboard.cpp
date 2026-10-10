@@ -237,7 +237,7 @@ DashboardFrame::DashboardFrame(VoidCallback refreshAll, VoidCallback openSetting
   title_->SetFont(theme_.titleFont);
   title_->SetForegroundColour(theme_.text);
   title_->SetBackgroundColour(theme_.surface);
-  appBarSizer_->Add(title_, 1, wxEXPAND | wxALL | wxALIGN_CENTER_VERTICAL, theme_.spaceLg);
+  appBarSizer_->Add(title_, 1, wxALL | wxALIGN_CENTER_VERTICAL, theme_.spaceLg);
 
   appActions_ = new wxPanel(appBar_);
   appActions_->SetBackgroundColour(theme_.surface);
@@ -346,7 +346,7 @@ void DashboardFrame::UpdateResponsiveLayout() {
   appBarSizer_->SetOrientation(compact ? wxVERTICAL : wxHORIZONTAL);
   appBarSizer_->Add(title_, compact ? 0 : 1,
                     (compact ? wxEXPAND | wxLEFT | wxRIGHT | wxTOP
-                             : wxEXPAND | wxALL | wxALIGN_CENTER_VERTICAL),
+                             : wxALL | wxALIGN_CENTER_VERTICAL),
                     theme_.spaceLg);
   appBarSizer_->Add(appActions_, 0,
                     compact ? wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM
