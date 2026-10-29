@@ -28,6 +28,11 @@ add_library(ai_usage_core STATIC
 )
 target_include_directories(ai_usage_core PUBLIC include)
 target_link_libraries(ai_usage_core PUBLIC nlohmann_json::nlohmann_json)
+if(MSVC)
+  # getenv/tzset are flagged as deprecated CRT names; the POSIX-style calls
+  # here are intentional and portable across the non-Windows build too.
+  target_compile_definitions(ai_usage_core PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 
 add_library(ai_usage_platform STATIC)
 target_include_directories(ai_usage_platform PUBLIC include)

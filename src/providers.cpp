@@ -114,23 +114,34 @@ std::optional<int> MonthIndex(std::string month) {
 // process TZ for the duration of mktime; localtime_r/mktime on the other
 // threads are only affected for those microseconds, and the previous value is
 // always restored.
+#ifdef _WIN32
+bool SetTzEnv(const std::string& value) { return ::_putenv_s("TZ", value.c_str()) == 0; }
+// MSVC has no unsetenv; an empty value removes the variable instead.
+void UnsetTzEnv() { ::_putenv_s("TZ", ""); }
+void ApplyTzset() { ::_tzset(); }
+#else
+bool SetTzEnv(const std::string& value) { return ::setenv("TZ", value.c_str(), 1) == 0; }
+void UnsetTzEnv() { ::unsetenv("TZ"); }
+void ApplyTzset() { ::tzset(); }
+#endif
+
 class ScopedTimezone {
  public:
   explicit ScopedTimezone(const std::string& zone) {
     if (zone.empty()) return;
     const char* current = ::getenv("TZ");
     previous_ = current != nullptr ? std::optional<std::string>{current} : std::nullopt;
-    active_ = ::setenv("TZ", zone.c_str(), 1) == 0;
-    if (active_) ::tzset();
+    active_ = SetTzEnv(zone);
+    if (active_) ApplyTzset();
   }
   ~ScopedTimezone() {
     if (!active_) return;
     if (previous_.has_value()) {
-      ::setenv("TZ", previous_->c_str(), 1);
+      SetTzEnv(*previous_);
     } else {
-      ::unsetenv("TZ");
+      UnsetTzEnv();
     }
-    ::tzset();
+    ApplyTzset();
   }
   ScopedTimezone(const ScopedTimezone&) = delete;
   ScopedTimezone& operator=(const ScopedTimezone&) = delete;
