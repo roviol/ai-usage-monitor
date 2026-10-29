@@ -278,13 +278,6 @@ void TestClaudeParser() {
 // wall clock with the published zone instead of the system one, so the
 // stored instant lands on the same wall clock in the published zone.
 void TestClaudeParserCrossTimezone() {
-#ifdef _WIN32
-  const char* previous = nullptr;
-  std::size_t length = 0;
-  if (_dupenv_s(&length == nullptr ? &length : &length, &length, "TZ") == 0 && length > 0) {
-    // handled below
-  }
-#endif
   // Run the body in a zone different from the published one.
   const auto usage = [&] {
 #ifdef _WIN32
