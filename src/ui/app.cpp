@@ -416,6 +416,12 @@ void MonitorApp::OnQueryEndSession(wxCloseEvent& event) {
 
 wxIMPLEMENT_APP_NO_MAIN(ai_usage::ui::MonitorApp);
 
+#ifdef _WIN32
+// Windows links this as a WIN32 subsystem executable, which requires a
+// WinMain entry point rather than main(); the --console dispatch below is
+// Linux-only, so there's nothing to intercept before handing off to wx here.
+wxIMPLEMENT_WXWIN_MAIN
+#else
 int main(int argc, char** argv) {
 #ifdef __linux__
   for (int i = 1; i < argc; ++i) {
@@ -426,3 +432,4 @@ int main(int argc, char** argv) {
 #endif
   return wxEntry(argc, argv);
 }
+#endif
