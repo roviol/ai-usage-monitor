@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(ai_usage_monitor VERSION 0.4.0 LANGUAGES CXX)
+project(ai_usage_monitor VERSION 0.4.1 LANGUAGES CXX)
 
 include(CTest)
 include(GNUInstallDirs)
