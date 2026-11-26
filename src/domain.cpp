@@ -215,7 +215,8 @@ std::string ToString(ProviderKind value) {
       std::pair{ProviderKind::ClaudeSubscription, "claude-subscription"},
       std::pair{ProviderKind::DeepSeek, "deepseek"},
       std::pair{ProviderKind::OpenAiCompatible, "openai-compatible"},
-      std::pair{ProviderKind::Ollama, "ollama"}};
+      std::pair{ProviderKind::Ollama, "ollama"},
+      std::pair{ProviderKind::Gemini, "gemini"}};
   return EnumString(value, values);
 }
 

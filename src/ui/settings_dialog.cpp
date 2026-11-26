@@ -25,7 +25,7 @@ constexpr int TestProviderId = wxID_HIGHEST + 202;
 constexpr int OpenDataId = wxID_HIGHEST + 203;
 
 const wxArrayString& KindLabels() {
-  static const wxArrayString labels{"Codex", "Claude /usage local", "DeepSeek", "Ollama", "OpenAI-compatible"};
+  static const wxArrayString labels{"Codex", "Claude /usage local", "DeepSeek", "Ollama", "OpenAI-compatible", "Gemini (API key)"};
   return labels;
 }
 
@@ -35,6 +35,7 @@ ProviderKind KindFromIndex(int index) {
     case 1: return ProviderKind::ClaudeSubscription;
     case 2: return ProviderKind::DeepSeek;
     case 3: return ProviderKind::Ollama;
+    case 5: return ProviderKind::Gemini;
     default: return ProviderKind::OpenAiCompatible;
   }
 }
@@ -46,6 +47,7 @@ int IndexFromKind(ProviderKind kind) {
     case ProviderKind::DeepSeek: return 2;
     case ProviderKind::Ollama: return 3;
     case ProviderKind::OpenAiCompatible: return 4;
+    case ProviderKind::Gemini: return 5;
   }
   return 4;
 }
@@ -422,7 +424,9 @@ void SettingsDialog::LoadSelected() {
       apiKey_->SetHint("La credencial no puede descifrarse; vuelva a introducirla");
     }
   } else {
-    apiKey_->SetHint(wxS("Sólo si el servidor de arriba exige credencial"));
+    apiKey_->SetHint(provider.kind == ProviderKind::Gemini
+                         ? wxS("Pegue aquí la API key de aistudio.google.com/apikey")
+                         : wxS("Sólo si el servidor de arriba exige credencial"));
   }
   usagePath_->SetValue(wxString::FromUTF8(provider.usagePath));
   balancePath_->SetValue(wxString::FromUTF8(provider.balancePath));
@@ -481,7 +485,7 @@ void SettingsDialog::UpdateFieldVisibility() {
   const auto selectedKind = KindFromIndex(kind_->GetSelection());
   const bool local = selectedKind == ProviderKind::Codex || selectedKind == ProviderKind::ClaudeSubscription;
   const bool http = selectedKind == ProviderKind::DeepSeek || selectedKind == ProviderKind::OpenAiCompatible ||
-                    selectedKind == ProviderKind::Ollama;
+                    selectedKind == ProviderKind::Ollama || selectedKind == ProviderKind::Gemini;
   const bool generic = selectedKind == ProviderKind::OpenAiCompatible;
   const auto showRow = [](wxStaticText* label, wxWindow* control, bool show) {
     label->Show(show);
@@ -649,7 +653,7 @@ void SettingsDialog::OnAccept(wxCommandEvent&) {
         throw std::runtime_error("Seleccione un ejecutable compatible para " + provider.name + ".");
       }
       if ((provider.kind == ProviderKind::DeepSeek || provider.kind == ProviderKind::OpenAiCompatible ||
-           provider.kind == ProviderKind::Ollama) &&
+           provider.kind == ProviderKind::Ollama || provider.kind == ProviderKind::Gemini) &&
           provider.baseUrl.empty()) {
         throw std::runtime_error("La URL base es obligatoria para " + provider.name + ".");
       }

@@ -1,0 +1,5 @@
+{"models":[
+ {"name":"models/gemini-flash","supportedGenerationMethods":["generateContent","countTokens"]},
+ {"name":"models/gemini-pro","supportedGenerationMethods":["generateContent"]},
+ {"name":"models/text-embedding","supportedGenerationMethods":["embedContent"]}
+]}

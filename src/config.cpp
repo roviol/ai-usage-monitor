@@ -38,6 +38,7 @@ ProviderKind ParseProviderKind(const std::string& text) {
   if (text == "deepseek") return ProviderKind::DeepSeek;
   if (text == "openai-compatible") return ProviderKind::OpenAiCompatible;
   if (text == "ollama") return ProviderKind::Ollama;
+  if (text == "gemini") return ProviderKind::Gemini;
   throw std::runtime_error("unknown provider kind");
 }
 
@@ -447,6 +448,8 @@ ProviderKindDefaults DefaultsForKind(ProviderKind kind) {
       return {"https://api.deepseek.com", "/user/balance", false};
     case ProviderKind::Ollama:
       return {"http://localhost:11434", "", true};
+    case ProviderKind::Gemini:
+      return {"https://generativelanguage.googleapis.com", "", false};
     case ProviderKind::Codex:
     case ProviderKind::ClaudeSubscription:
     case ProviderKind::OpenAiCompatible:

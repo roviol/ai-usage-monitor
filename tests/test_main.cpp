@@ -1227,6 +1227,42 @@ void TestOllamaProvider() {
   CHECK(!test.capabilities.tokenActivity);
 }
 
+void TestGeminiProvider() {
+  FakeHttp http;
+  FakeProcess process;
+  FakeSecrets secrets;
+  ProviderConfig config{"gemini", "Gemini", ProviderKind::Gemini, true};
+  config.baseUrl = DefaultsForKind(ProviderKind::Gemini).baseUrl;
+  config.encryptedApiKey = "protected:test-key";
+  http.response = {200, {}, ReadFixture("gemini_models.json")};
+  auto provider = CreateProvider(config, http, process, secrets);
+  const auto snapshot = provider->Refresh();
+  CHECK(http.last.url == "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000");
+  CHECK(http.last.url.find("test-key") == std::string::npos);
+  CHECK(http.last.headers.at("x-goog-api-key") == "test-key");
+  CHECK(snapshot.health == Health::Healthy);
+  CHECK(snapshot.metrics.size() == 2U);
+  CHECK(snapshot.metrics[0].value == "2");
+  CHECK(snapshot.metrics[1].availability == Availability::Unsupported);
+  CHECK(ValidateSnapshot(snapshot).valid);
+  CHECK(provider->TestConnection().message.find("gemini-flash") != std::string::npos);
+
+  http.response = {400, {}, R"({"error":{"details":[{"reason":"API_KEY_INVALID"}]}})"};
+  bool unauthorized = false;
+  try {
+    (void)provider->Refresh();
+  } catch (const ProviderException& error) {
+    unauthorized = error.Error().code == "unauthorized";
+  }
+  CHECK(unauthorized);
+  CHECK(!provider->TestConnection().success);
+
+  bool schemaRejected = false;
+  try { (void)ParseGeminiModels("{}"); } catch (...) { schemaRejected = true; }
+  CHECK(schemaRejected);
+  CHECK(ToString(ProviderKind::Gemini) == "gemini");
+}
+
 void TestTooltip() {
   const auto now = Clock::now();
   ProviderSnapshot snapshot{"codex", "Codex", ProviderKind::Codex, now - std::chrono::minutes{3}, Freshness::Fresh, Health::Healthy};
@@ -1584,6 +1620,7 @@ int main(int argc, char** argv) {
       {"security", "unit", TestSecurityHelpers},
       {"process-instance", "unit", TestProcessCancellationAndSingleInstance},
       {"provider", "fixture", TestProviderEndToEnd},
+      {"gemini-provider", "fixture", TestGeminiProvider},
       {"tooltip", "unit", TestTooltip},
       {"overlay", "unit", TestOverlayPresentationModel},
       {"presentation", "unit", TestPresentationRules},

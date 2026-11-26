@@ -359,6 +359,59 @@ class DeepSeekProvider final : public ProviderBase {
   }
 };
 
+class GeminiProvider final : public ProviderBase {
+ public:
+  using ProviderBase::ProviderBase;
+  ProviderCapabilities Capabilities() const override {
+    return {false, false, false, false, "Gemini /v1beta/models (sin datos de uso)"};
+  }
+  ConnectionTestResult TestConnection() override {
+    try {
+      const auto models = FetchModels();
+      std::string message = "Llave válida: " + std::to_string(models.size()) + " modelos de generación";
+      for (std::size_t index = 0; index < models.size() && index < 5U; ++index) {
+        message += (index == 0U ? " (" : ", ") + models[index];
+      }
+      if (!models.empty()) message += models.size() > 5U ? ", …)" : ")";
+      return {true, Capabilities(), message};
+    } catch (const std::exception& error) {
+      return {false, Capabilities(), error.what()};
+    }
+  }
+  ProviderSnapshot Refresh() override {
+    BeginRefresh();
+    const auto models = FetchModels();
+    auto snapshot = BaseSnapshot(config_, Clock::now());
+    snapshot.metrics.push_back(Metric{MetricKind::LoadedModels, std::to_string(models.size()), MetricUnit::Count,
+                                      MetricScope::CurrentObservation, Provenance::ProviderReported,
+                                      Availability::Available, std::nullopt, std::nullopt, "Modelos disponibles"});
+    snapshot.metrics.push_back(Unsupported(MetricKind::UsedPercent, MetricUnit::Percent, MetricScope::Day,
+                                           "Uso no disponible con API key"));
+    return snapshot;
+  }
+
+ private:
+  // Listing models validates the key without sending a prompt.
+  std::vector<std::string> FetchModels() {
+    const auto key = ApiKey(config_, secrets_);
+    if (key.empty()) throw std::runtime_error("Gemini API key is required");
+    HttpRequest request;
+    const auto base = config_.baseUrl.empty() ? DefaultsForKind(ProviderKind::Gemini).baseUrl : config_.baseUrl;
+    request.url = JoinUrl(base, "/v1beta/models?pageSize=1000");
+    // Header rather than ?key= so the credential never becomes part of a URL.
+    request.headers["x-goog-api-key"] = key;
+    request.headers["Accept"] = "application/json";
+    request.allowLoopbackHttp = config_.allowLoopbackHttp;
+    const auto response = http_.Send(request);
+    // Google rejects a malformed or unknown key with 400, not 401.
+    if (response.status == 400 && response.body.find("API_KEY_INVALID") != std::string::npos) {
+      throw ProviderException(ProviderError{"unauthorized", "authentication rejected", false, std::nullopt});
+    }
+    RequireHttpSuccess(response);
+    return ParseGeminiModels(response.body);
+  }
+};
+
 class GenericProvider final : public ProviderBase {
  public:
   using ProviderBase::ProviderBase;
@@ -797,6 +850,29 @@ std::optional<ProviderSnapshot> ParseClaudeUsageText(
   return snapshot;
 }
 
+std::vector<std::string> ParseGeminiModels(const std::string& json) {
+  const auto root = Json::parse(json);
+  if (!root.is_object() || !root.contains("models") || !root["models"].is_array()) {
+    throw std::runtime_error("Gemini schema: models must be an array");
+  }
+  std::vector<std::string> models;
+  for (const auto& model : root["models"]) {
+    if (!model.is_object() || !model.contains("name") || !model["name"].is_string()) {
+      throw std::runtime_error("Gemini schema: model name missing");
+    }
+    const auto methods = model.find("supportedGenerationMethods");
+    if (methods == model.end() || !methods->is_array() ||
+        std::find(methods->begin(), methods->end(), "generateContent") == methods->end()) {
+      continue;
+    }
+    auto name = model["name"].get<std::string>();
+    if (name.starts_with("models/")) name.erase(0, 7);
+    if (name.empty() || name.size() > 256U) throw std::runtime_error("Gemini schema: invalid model name");
+    models.push_back(std::move(name));
+  }
+  return models;
+}
+
 std::vector<Metric> ParseOllamaCloudUsage(const std::string& json) {
   // ollama.com/api/usage reports the consumed share of the monthly allowance as
   // a 0..1 fraction, plus per-model request counts. It publishes no currency
@@ -951,6 +1027,8 @@ std::unique_ptr<IUsageProvider> CreateProvider(
       return std::make_unique<GenericProvider>(std::move(config), http, process, secrets);
     case ProviderKind::Ollama:
       return std::make_unique<OllamaProvider>(std::move(config), http, process, secrets);
+    case ProviderKind::Gemini:
+      return std::make_unique<GeminiProvider>(std::move(config), http, process, secrets);
   }
   throw std::runtime_error("unsupported provider kind");
 }

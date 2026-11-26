@@ -13,6 +13,7 @@ VC++ Redistributable en el equipo donde se ejecuta.
 | Claude suscripción | `claude /usage` local y no interactivo | Porcentaje usado y próximo reinicio de cada cuota que publique el cliente; no se configura API key ni se llama directamente a Anthropic |
 | DeepSeek | `GET /user/balance` | Saldo por moneda y consumo derivado si se configura un presupuesto |
 | OpenAI-compatible | `/models` y ruta configurable | Métricas definidas por JSON Pointer; nunca inventa una cuota que el endpoint no publique |
+| Gemini (API key) | `GET /v1beta/models` | Validez de la llave y número de modelos de generación. El uso y la cuota restante no están disponibles solo con la API key; consúltelos en [AI Studio](https://aistudio.google.com/rate-limit) |
 | Ollama | `GET /api/ps` y `POST /api/me` local o autoalojado | Disponibilidad del servidor, número de modelos cargados, memoria/VRAM por modelo, hora de descarga si la API la publica, y cuenta con su plan |
 | Ollama Cloud | `GET ollama.com/api/usage` con API key propia | Porcentaje consumido y restante de la asignación mensual, y peticiones por modelo |
 

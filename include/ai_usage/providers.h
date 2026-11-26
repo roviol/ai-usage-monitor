@@ -55,6 +55,7 @@ std::optional<ProviderSnapshot> ParseClaudeUsageText(
 ProviderSnapshot ParseOllamaStatus(
     const ProviderConfig& config, const std::string& json, TimePoint observedAt);
 std::string ParseOllamaAccountLabel(const std::string& json);
+std::vector<std::string> ParseGeminiModels(const std::string& json);
 std::vector<Metric> ParseOllamaCloudUsage(const std::string& json);
 
 }  // namespace ai_usage
