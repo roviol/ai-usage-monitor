@@ -422,13 +422,48 @@ class ClaudeSubscriptionProvider final : public ProviderBase {
   ProviderSnapshot Refresh() override {
     BeginRefresh();
     if (config_.executable.empty()) throw std::runtime_error("Claude executable unavailable");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    const auto auth = process_.Run(ProcessRequest{config_.executable, {"auth", "status", "--json"}, {},
+                                                 std::chrono::milliseconds{10000}, CancellationProbe()});
+    if (auth.cancelled) throw std::runtime_error("Claude authentication check cancelled");
+    if (auth.timedOut) throw std::runtime_error("Claude authentication check timed out");
+    // A logged-out client can return a nonzero exit status with valid JSON.
+    // Never include this response in diagnostics: it may contain account details.
+    const auto status = Json::parse(auth.standardOutput, nullptr, false);
+    if (status.is_object() && status.contains("loggedIn") && status["loggedIn"].is_boolean()) {
+      if (!status["loggedIn"].get<bool>()) {
+        throw ProviderException(ProviderError{"unauthorized",
+            "Claude no tiene una sesión iniciada. Ejecuta: claude auth login --claudeai; después pulsa Refrescar.",
+            false, std::nullopt});
+      }
+      const auto method = status.find("authMethod");
+      if (method != status.end() && method->is_string() &&
+          (*method == "api_key" || *method == "apiKey")) {
+        throw ProviderException(ProviderError{"unsupported",
+            "Claude está usando facturación API, sin cuotas de suscripción. Ejecuta: claude auth login --claudeai.",
+            false, std::nullopt});
+      }
+    } else if (auth.exitCode == 0) {
+      throw ProviderException(ProviderError{"claude-auth-format",
+          "No se reconoce el estado de autenticación de Claude. Comprueba: claude auth status --json.",
+          false, std::nullopt});
+    }
+    // Older clients may not implement auth status; retain their /usage bridge.
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+    if (remaining <= std::chrono::milliseconds{0}) throw std::runtime_error("Claude refresh timed out");
     const auto result = process_.Run(ProcessRequest{config_.executable, {"/usage"}, {},
-                                                     std::chrono::milliseconds{10000}, CancellationProbe()});
+                                                     remaining, CancellationProbe()});
     if (result.cancelled) throw std::runtime_error("claude /usage cancelled");
     if (result.timedOut) throw std::runtime_error("claude /usage timed out");
-    if (result.exitCode != 0) throw std::runtime_error("claude /usage failed: " + result.standardError);
+    if (result.exitCode != 0) throw std::runtime_error("claude /usage failed; comprueba la sesión con claude auth status --json");
     const auto parsed = ParseClaudeUsageText(config_, result.standardOutput, Clock::now());
-    if (!parsed.has_value()) throw std::runtime_error("claude /usage output schema is unsupported");
+    if (!parsed.has_value()) {
+      throw ProviderException(ProviderError{"unsupported",
+          "Claude /usage no devuelve porcentajes de suscripción reconocibles. Comprueba claude auth status --json "
+          "y /usage en Claude; los totales de coste o tokens de sesión no son cuotas de suscripción.",
+          false, std::nullopt});
+    }
     return *parsed;
   }
 };

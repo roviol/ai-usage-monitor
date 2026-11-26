@@ -110,7 +110,7 @@ real del icono depende de GNOME/KDE y sus extensiones StatusNotifier.
 ## Privacidad y refresco
 
 No se leen archivos privados de autenticación de los clientes. Codex usa su
-app-server local y Claude ejecuta únicamente `claude /usage`, con salida
+app-server local y Claude consulta `claude auth status --json` y ejecuta `claude /usage`, con salida
 redirigida, sin stdin, sin pseudo-terminal y sin enviar un prompt al modelo. Un error conserva el último dato bueno como
 obsoleto. El scheduler no sondea entre vencimientos, agrupa solicitudes repetidas
 y aplica backoff acotado; “Refrescar” realiza un intento inmediato.
@@ -152,3 +152,11 @@ guarda solamente `codex` o `claude` y resuelve su ruta mediante `PATH` al ejecut
 ## Licencia
 
 MIT. Dependencias y avisos en `THIRD_PARTY_NOTICES.md`.
+
+## Si Claude deja de actualizar
+
+Ejecuta `claude auth status --json` en el mismo equipo y con el mismo usuario del monitor. Si indica `loggedIn: false`, inicia sesión con `claude auth login --claudeai`, completa el acceso en el navegador y pulsa **Refrescar** en el monitor. No hace falta introducir credenciales en esta aplicación.
+
+Una sesión de facturación API no publica cuotas de suscripción. Además, un resumen como `Total cost: $0.0000` o `Usage: 0 input, 0 output` describe la ejecución local y no permite calcular los porcentajes de sesión o semana. El monitor nunca interpreta esos ceros como cuota disponible. Si hay sesión iniciada y sigue faltando el porcentaje, comprueba `/usage` dentro de Claude: puede haber una incompatibilidad de salida que requiera adaptar la captura.
+
+Los últimos valores válidos se conservan como obsoletos con su fecha original. La consulta de autenticación y la captura comparten un límite total de diez segundos; sus salidas sin procesar no se incluyen en los mensajes de error.

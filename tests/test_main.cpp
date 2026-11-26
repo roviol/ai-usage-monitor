@@ -85,8 +85,12 @@ struct FakeHttp final : IHttpClient {
 struct FakeProcess final : IProcessRunner {
   ProcessResult result;
   ProcessRequest last;
+  std::vector<ProcessResult> responses;
+  std::vector<ProcessRequest> requests;
   ProcessResult Run(const ProcessRequest& request) override {
     last = request;
+    requests.push_back(request);
+    if (!responses.empty()) return responses[std::min(requests.size() - 1U, responses.size() - 1U)];
     return result;
   }
 };
@@ -390,6 +394,7 @@ void TestClaudeBridge() {
   FakeProcess process;
   FakeSecrets secrets;
   process.result = ProcessResult{0, ReadFixture("claude_usage_screen.txt"), {}, false};
+  process.responses = {{0, R"({"loggedIn":true,"authMethod":"claude.ai"})", {}, false}, process.result};
   ProviderConfig config{"claude", "Claude", ProviderKind::ClaudeSubscription, true};
   config.executable = "claude.exe";
   auto provider = CreateProvider(config, http, process, secrets);
@@ -400,6 +405,78 @@ void TestClaudeBridge() {
   CHECK(process.last.standardInput.empty());
   CHECK(snapshot.metrics.size() == 4U);
   CHECK(snapshot.metrics[0].value == "37");
+  CHECK(process.requests.size() == 2U);
+  CHECK(process.requests[0].arguments == std::vector<std::string>({"auth", "status", "--json"}));
+  CHECK(process.last.timeout > std::chrono::milliseconds{0});
+  CHECK(process.last.timeout <= std::chrono::milliseconds{10000});
+}
+
+void TestClaudeAuthentication() {
+  FakeHttp http;
+  FakeSecrets secrets;
+  ProviderConfig config{"claude", "Claude", ProviderKind::ClaudeSubscription, true};
+  config.executable = "claude";
+  const std::string secret = "private-account-data";
+  auto expectError = [&](std::vector<ProcessResult> responses, const std::string& code,
+                         const std::string& message, std::size_t calls) {
+    FakeProcess process;
+    process.responses = std::move(responses);
+    auto provider = CreateProvider(config, http, process, secrets);
+    bool rejected = false;
+    try { (void)provider->Refresh(); }
+    catch (const ProviderException& error) {
+      rejected = true;
+      CHECK(error.Error().code == code);
+      CHECK(!error.Error().transient);
+      CHECK(std::string(error.what()).find(message) != std::string::npos);
+      CHECK(std::string(error.what()).find(secret) == std::string::npos);
+    }
+    CHECK(rejected);
+    CHECK(process.requests.size() == calls);
+  };
+  for (const int exitCode : {0, 1}) {
+    expectError({{exitCode, R"({"loggedIn":false,"email":"private-account-data"})", secret, false}},
+                "unauthorized", "claude auth login --claudeai", 1U);
+  }
+  expectError({{0, R"({"loggedIn":true,"authMethod":"api_key"})", {}, false}},
+              "unsupported", "facturación API", 1U);
+  for (const auto& output : {std::string{}, std::string{"not json"}, std::string{"[]"},
+                             std::string{R"({"loggedIn":"false"})"}}) {
+    expectError({{0, output, secret, false}}, "claude-auth-format", "claude auth status --json", 1U);
+  }
+  const ProcessResult loggedIn{0, R"({"loggedIn":true,"authMethod":"claude.ai"})", {}, false};
+  expectError({loggedIn, {0, "Total cost: $0.0000\nUsage: 0 input, 0 output\n", secret, false}},
+              "unsupported", "no devuelve porcentajes", 2U);
+  FakeProcess legacy;
+  legacy.responses = {{1, {}, "unknown command", false},
+                      {0, ReadFixture("claude_usage_screen.txt"), {}, false}};
+  auto provider = CreateProvider(config, http, legacy, secrets);
+  CHECK(provider->Refresh().metrics.size() == 4U);
+  CHECK(legacy.requests.size() == 2U);
+  for (const bool cancelled : {false, true}) {
+    for (const bool usageStage : {false, true}) {
+      FakeProcess process;
+      if (usageStage) process.responses.push_back(loggedIn);
+      process.responses.push_back({-1, {}, secret, !cancelled, cancelled});
+      auto failed = CreateProvider(config, http, process, secrets);
+      bool rejected = false;
+      try { (void)failed->Refresh(); }
+      catch (const std::exception& error) {
+        rejected = true;
+        CHECK(std::string(error.what()).find(cancelled ? "cancelled" : "timed out") != std::string::npos);
+        CHECK(std::string(error.what()).find(secret) == std::string::npos);
+      }
+      CHECK(rejected);
+      CHECK(process.requests.size() == (usageStage ? 2U : 1U));
+    }
+  }
+  FakeProcess failed;
+  failed.responses = {loggedIn, {1, {}, secret, false}};
+  provider = CreateProvider(config, http, failed, secrets);
+  try { (void)provider->Refresh(); CHECK(false); }
+  catch (const std::exception& error) {
+    CHECK(std::string(error.what()).find(secret) == std::string::npos);
+  }
 }
 
 void TestGenericParser() {
@@ -1473,10 +1550,17 @@ int main(int argc, char** argv) {
     auto runner = CreatePlatformProcessRunner();
     ProviderConfig config{"claude-probe", "Claude", ProviderKind::ClaudeSubscription, true};
     config.executable = *executable;
-    const auto result = runner->Run(ProcessRequest{*executable, {"/usage"}, {}, std::chrono::milliseconds{10000}});
-    const auto parsed = ParseClaudeUsageText(config, result.standardOutput, Clock::now());
-    std::cout << "usage-compatible=" << (parsed.has_value() ? "yes" : "no") << '\n';
-    return parsed.has_value() ? 0 : 3;
+    FakeHttp http;
+    FakeSecrets secrets;
+    auto provider = CreateProvider(config, http, *runner, secrets);
+    try {
+      const auto snapshot = provider->Refresh();
+      std::cout << "usage-compatible=yes metrics=" << snapshot.metrics.size() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cout << "usage-compatible=no diagnostic=" << error.what() << '\n';
+      return 3;
+    }
   }
   struct TestCase {
     const char* name;
@@ -1487,6 +1571,7 @@ int main(int argc, char** argv) {
       {"domain", "unit", TestDomainValidation}, {"aggregate", "unit", TestAggregate},
       {"codex", "fixture", TestCodexParser}, {"deepseek", "fixture", TestDeepSeekParser},
       {"claude", "fixture", TestClaudeParser}, {"claude-bridge", "fixture", TestClaudeBridge},
+      {"claude-authentication", "fixture", TestClaudeAuthentication},
       {"claude-tz", "unit", TestClaudeParserCrossTimezone}, {"claude-nozone", "unit", TestClaudeParserNoZone},
       {"generic", "fixture", TestGenericParser}, {"ollama", "fixture", TestOllamaParser},
       {"ollama-provider", "fixture", TestOllamaProvider}, {"settings", "unit", TestSettingsAndCache},
