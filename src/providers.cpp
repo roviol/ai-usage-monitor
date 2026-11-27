@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 
 namespace ai_usage {
 namespace {
@@ -115,7 +116,32 @@ std::optional<int> MonthIndex(std::string month) {
 // threads are only affected for those microseconds, and the previous value is
 // always restored.
 #ifdef _WIN32
-bool SetTzEnv(const std::string& value) { return ::_putenv_s("TZ", value.c_str()) == 0; }
+// The MSVC CRT only understands POSIX TZ rules, not IANA zone names: an
+// unrecognized name silently falls back to UTC. Translate the zones the app
+// is known to handle so wall-clock conversions still land on the right
+// instant; unknown names keep the previous fallback behavior.
+const std::unordered_map<std::string, std::string>& WindowsTzRules() {
+  static const std::unordered_map<std::string, std::string> rules{
+      {"UTC", "UTC0"},
+      {"Etc/UTC", "UTC0"},
+      {"America/New_York", "EST5EDT,M3.2.0/2,M11.1.0/2"},
+      {"America/Chicago", "CST6CDT,M3.2.0/2,M11.1.0/2"},
+      {"America/Denver", "MST7MDT,M3.2.0/2,M11.1.0/2"},
+      {"America/Los_Angeles", "PST8PDT,M3.2.0/2,M11.1.0/2"},
+      {"America/Santo_Domingo", "AST4"},
+      {"Europe/London", "GMT0BST,M3.5.0/1,M10.5.0/2"},
+      {"Europe/Madrid", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
+      {"Europe/Paris", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
+      {"Europe/Berlin", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
+  };
+  return rules;
+}
+
+bool SetTzEnv(const std::string& value) {
+  const auto& rules = WindowsTzRules();
+  const auto found = rules.find(value);
+  return ::_putenv_s("TZ", found != rules.end() ? found->second.c_str() : value.c_str()) == 0;
+}
 // MSVC has no unsetenv; an empty value removes the variable instead.
 void UnsetTzEnv() { ::_putenv_s("TZ", ""); }
 void ApplyTzset() { ::_tzset(); }
@@ -179,8 +205,10 @@ bool IsValidIanaZone(const std::string& zone) {
 }
 
 std::optional<TimePoint> ParseClaudeReset(const std::string& line, TimePoint observedAt) {
+  // The optional zone group must not be followed by \b: a line ending in
+  // "(Zone)" has no word boundary after ')', which silently dropped the zone.
   static const std::regex reset(
-      R"(\b(?:resets|reinicia)\s+([A-Za-z]{3})\s+([0-9]{1,2}),?\s+([0-9]{1,2})(?::([0-9]{2}))?\s*(am|pm)(?:\s*\(([^)\s][^)]*)\))?\b)",
+      R"(\b(?:resets|reinicia)\s+([A-Za-z]{3})\s+([0-9]{1,2}),?\s+([0-9]{1,2})(?::([0-9]{2}))?\s*(am|pm)(?:\s*\(([^)\s][^)]*)\))?(?![A-Za-z]))",
       std::regex::icase);
   std::smatch match;
   if (!std::regex_search(line, match, reset)) return std::nullopt;

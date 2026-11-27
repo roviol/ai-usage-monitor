@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifndef AI_USAGE_SOURCE_DIR
@@ -44,6 +45,36 @@ std::string ReadFixture(const std::string& name) {
   std::ifstream input(path, std::ios::binary);
   if (!input) throw std::runtime_error("fixture unavailable: " + path.string());
   return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+// Sets the process timezone for a test. The MSVC CRT only understands POSIX
+// TZ rules, so on Windows the IANA name is translated; unknown names are
+// passed through untouched.
+void SetAmbientZoneForTest(const std::string& ianaZone) {
+#ifdef _WIN32
+  static const std::unordered_map<std::string, std::string> rules{
+      {"UTC", "UTC0"},
+      {"America/New_York", "EST5EDT,M3.2.0/2,M11.1.0/2"},
+      {"America/Santo_Domingo", "AST4"},
+      {"Europe/Madrid", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
+  };
+  const auto found = rules.find(ianaZone);
+  _putenv_s("TZ", found != rules.end() ? found->second.c_str() : ianaZone.c_str());
+  _tzset();
+#else
+  setenv("TZ", ianaZone.c_str(), 1);
+  tzset();
+#endif
+}
+
+void ClearAmbientZoneForTest() {
+#ifdef _WIN32
+  _putenv_s("TZ", "");
+  _tzset();
+#else
+  unsetenv("TZ");
+  tzset();
+#endif
 }
 
 void SetDataDirectoryOverride(const std::optional<std::filesystem::path>& value) {
@@ -242,6 +273,9 @@ void TestDeepSeekParser() {
 }
 
 void TestClaudeParser() {
+  // Run under the zone the fixture publishes so the stored instants render
+  // back onto the same wall clock.
+  SetAmbientZoneForTest("America/Santo_Domingo");
   ProviderConfig config{"claude", "Claude", ProviderKind::ClaudeSubscription, true};
   std::tm observedLocal{};
   observedLocal.tm_year = 2026 - 1900;
@@ -275,6 +309,7 @@ void TestClaudeParser() {
   CHECK(sessionLocal.tm_mon == 7 && sessionLocal.tm_mday == 5 && sessionLocal.tm_hour == 19 && sessionLocal.tm_min == 10);
   CHECK(weeklyLocal.tm_mon == 7 && weeklyLocal.tm_mday == 7 && weeklyLocal.tm_hour == 21 && weeklyLocal.tm_min == 0);
   CHECK(!ParseClaudeUsageText(config, "ordinary model response", Clock::now()).has_value());
+  ClearAmbientZoneForTest();
 }
 
 // The fixture line publishes its reset time in America/Santo_Domingo while
@@ -284,13 +319,7 @@ void TestClaudeParser() {
 void TestClaudeParserCrossTimezone() {
   // Run the body in a zone different from the published one.
   const auto usage = [&] {
-#ifdef _WIN32
-    _putenv_s("TZ", "America/New_York");
-    _tzset();
-#else
-    setenv("TZ", "America/New_York", 1);
-    tzset();
-#endif
+    SetAmbientZoneForTest("America/New_York");
     try {
       ProviderConfig config{"claude", "Claude", ProviderKind::ClaudeSubscription, true};
       std::tm observedLocal{};
@@ -307,13 +336,7 @@ void TestClaudeParserCrossTimezone() {
   }();
   // Restore the process timezone before asserting: the rest of the suite
   // assumes the ambient zone.
-#ifdef _WIN32
-  _putenv_s("TZ", "");
-  _tzset();
-#else
-  unsetenv("TZ");
-  tzset();
-#endif
+  ClearAmbientZoneForTest();
   CHECK(usage.has_value());
   if (!usage.has_value()) return;
   CHECK(usage->metrics[0].resetsAt.has_value());
@@ -1574,29 +1597,11 @@ void TestResetMetadataLocalZone() {
   Metric used{MetricKind::UsedPercent, "42", MetricUnit::Percent, MetricScope::RollingWindow};
   used.resetsAt = reset;
   const auto now = TimePoint{std::chrono::seconds{1785942000 - 60}};
-#ifdef _WIN32
-  _putenv_s("TZ", "America/New_York");
-  _tzset();
-#else
-  setenv("TZ", "America/New_York", 1);
-  tzset();
-#endif
+  SetAmbientZoneForTest("America/New_York");
   const auto newYorkText = FormatResetMetadata(used, now);
-#ifdef _WIN32
-  _putenv_s("TZ", "Europe/Madrid");
-  _tzset();
-#else
-  setenv("TZ", "Europe/Madrid", 1);
-  tzset();
-#endif
+  SetAmbientZoneForTest("Europe/Madrid");
   const auto madridText = FormatResetMetadata(used, now);
-#ifdef _WIN32
-  _putenv_s("TZ", "");
-  _tzset();
-#else
-  unsetenv("TZ");
-  tzset();
-#endif
+  ClearAmbientZoneForTest();
   // 15:00 UTC is 11:00 in New York (EDT) and 17:00 in Madrid (CEST).
   CHECK(newYorkText.starts_with("Reinicia 2026-08-05 11:00:00"));
   CHECK(madridText.starts_with("Reinicia 2026-08-05 17:00:00"));
