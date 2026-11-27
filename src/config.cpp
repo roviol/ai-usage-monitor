@@ -35,6 +35,7 @@ ProviderKind ParseProviderKind(const std::string& text) {
   if (text == "codex") return ProviderKind::Codex;
   if (text == "claude-subscription") return ProviderKind::ClaudeSubscription;
   if (text == "claude-api") return ProviderKind::ClaudeSubscription;
+  if (text == "agy") return ProviderKind::Agy;
   if (text == "deepseek") return ProviderKind::DeepSeek;
   if (text == "openai-compatible") return ProviderKind::OpenAiCompatible;
   if (text == "ollama") return ProviderKind::Ollama;
@@ -452,6 +453,7 @@ ProviderKindDefaults DefaultsForKind(ProviderKind kind) {
       return {"https://generativelanguage.googleapis.com", "", false};
     case ProviderKind::Codex:
     case ProviderKind::ClaudeSubscription:
+    case ProviderKind::Agy:
     case ProviderKind::OpenAiCompatible:
       break;
   }

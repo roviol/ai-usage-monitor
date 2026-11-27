@@ -378,6 +378,7 @@ std::optional<char> PollKeyPress(std::chrono::milliseconds timeout) {
 std::optional<std::string> DefaultExecutableCommand(ProviderKind kind) {
   if (kind == ProviderKind::Codex) return "codex";
   if (kind == ProviderKind::ClaudeSubscription) return "claude";
+  if (kind == ProviderKind::Agy) return "agy";
   return std::nullopt;
 }
 

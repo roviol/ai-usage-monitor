@@ -25,7 +25,8 @@ constexpr int TestProviderId = wxID_HIGHEST + 202;
 constexpr int OpenDataId = wxID_HIGHEST + 203;
 
 const wxArrayString& KindLabels() {
-  static const wxArrayString labels{"Codex", "Claude /usage local", "DeepSeek", "Ollama", "OpenAI-compatible", "Gemini (API key)"};
+  static const wxArrayString labels{"Codex", "Claude /usage local", "Antigravity (agy) local", "DeepSeek", "Ollama",
+                                    "OpenAI-compatible", "Gemini (API key)"};
   return labels;
 }
 
@@ -33,9 +34,10 @@ ProviderKind KindFromIndex(int index) {
   switch (index) {
     case 0: return ProviderKind::Codex;
     case 1: return ProviderKind::ClaudeSubscription;
-    case 2: return ProviderKind::DeepSeek;
-    case 3: return ProviderKind::Ollama;
-    case 5: return ProviderKind::Gemini;
+    case 2: return ProviderKind::Agy;
+    case 3: return ProviderKind::DeepSeek;
+    case 4: return ProviderKind::Ollama;
+    case 6: return ProviderKind::Gemini;
     default: return ProviderKind::OpenAiCompatible;
   }
 }
@@ -44,12 +46,13 @@ int IndexFromKind(ProviderKind kind) {
   switch (kind) {
     case ProviderKind::Codex: return 0;
     case ProviderKind::ClaudeSubscription: return 1;
-    case ProviderKind::DeepSeek: return 2;
-    case ProviderKind::Ollama: return 3;
-    case ProviderKind::OpenAiCompatible: return 4;
-    case ProviderKind::Gemini: return 5;
+    case ProviderKind::Agy: return 2;
+    case ProviderKind::DeepSeek: return 3;
+    case ProviderKind::Ollama: return 4;
+    case ProviderKind::OpenAiCompatible: return 5;
+    case ProviderKind::Gemini: return 6;
   }
-  return 4;
+  return 5;
 }
 
 std::string NewId(ProviderKind kind) {
@@ -483,7 +486,8 @@ void SettingsDialog::SaveSelected() {
 
 void SettingsDialog::UpdateFieldVisibility() {
   const auto selectedKind = KindFromIndex(kind_->GetSelection());
-  const bool local = selectedKind == ProviderKind::Codex || selectedKind == ProviderKind::ClaudeSubscription;
+  const bool local = selectedKind == ProviderKind::Codex || selectedKind == ProviderKind::ClaudeSubscription ||
+                     selectedKind == ProviderKind::Agy;
   const bool http = selectedKind == ProviderKind::DeepSeek || selectedKind == ProviderKind::OpenAiCompatible ||
                     selectedKind == ProviderKind::Ollama || selectedKind == ProviderKind::Gemini;
   const bool generic = selectedKind == ProviderKind::OpenAiCompatible;
@@ -571,6 +575,10 @@ void SettingsDialog::OnAdd(wxCommandEvent&) {
     const auto path = DiscoverExecutable("claude");
     if (path.has_value()) provider.executable = "claude";
   }
+  if (selectedKind == ProviderKind::Agy) {
+    const auto path = DiscoverExecutable("agy");
+    if (path.has_value()) provider.executable = "agy";
+  }
   working_.providers.push_back(std::move(provider));
   RefreshList(static_cast<int>(working_.providers.size() - 1));
 }
@@ -648,7 +656,8 @@ void SettingsDialog::OnAccept(wxCommandEvent&) {
 #endif
     for (const auto& provider : working_.providers) {
       if (provider.enabled &&
-          (provider.kind == ProviderKind::Codex || provider.kind == ProviderKind::ClaudeSubscription) &&
+          (provider.kind == ProviderKind::Codex || provider.kind == ProviderKind::ClaudeSubscription ||
+           provider.kind == ProviderKind::Agy) &&
           provider.executable.empty()) {
         throw std::runtime_error("Seleccione un ejecutable compatible para " + provider.name + ".");
       }

@@ -213,6 +213,7 @@ std::string ToString(ProviderKind value) {
   static constexpr std::array values{
       std::pair{ProviderKind::Codex, "codex"},
       std::pair{ProviderKind::ClaudeSubscription, "claude-subscription"},
+      std::pair{ProviderKind::Agy, "agy"},
       std::pair{ProviderKind::DeepSeek, "deepseek"},
       std::pair{ProviderKind::OpenAiCompatible, "openai-compatible"},
       std::pair{ProviderKind::Ollama, "ollama"},

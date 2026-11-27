@@ -52,6 +52,8 @@ ProviderSnapshot ParseDeepSeekBalance(const ProviderConfig& config, const std::s
 std::vector<Metric> ParseGenericMetrics(const ProviderConfig& config, const std::string& json);
 std::optional<ProviderSnapshot> ParseClaudeUsageText(
     const ProviderConfig& config, const std::string& output, TimePoint observedAt);
+std::optional<ProviderSnapshot> ParseAgyUsageJson(
+    const ProviderConfig& config, const std::string& json, TimePoint observedAt);
 ProviderSnapshot ParseOllamaStatus(
     const ProviderConfig& config, const std::string& json, TimePoint observedAt);
 std::string ParseOllamaAccountLabel(const std::string& json);

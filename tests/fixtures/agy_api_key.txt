@@ -1,0 +1,1 @@
+Account quota is unavailable when using GEMINI_API_KEY. View your API key usage in Google AI Studio.

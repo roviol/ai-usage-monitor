@@ -521,13 +521,74 @@ class ClaudeSubscriptionProvider final : public ProviderBase {
   }
 };
 
+class AgyProvider final : public ProviderBase {
+ public:
+  using ProviderBase::ProviderBase;
+  ProviderCapabilities Capabilities() const override {
+    return {true, true, false, false, "agy /usage local no interactivo"};
+  }
+  ConnectionTestResult TestConnection() override {
+    try {
+      const auto snapshot = Refresh();
+      return {snapshot.health == Health::Healthy, Capabilities(), "agy /usage disponible"};
+    } catch (const std::exception& error) {
+      return {false, Capabilities(), error.what()};
+    }
+  }
+  ProviderSnapshot Refresh() override {
+    BeginRefresh();
+    if (config_.executable.empty()) throw std::runtime_error("Antigravity (agy) executable unavailable");
+    // Empty standardInput with the default zero close delay gives the child an
+    // immediate EOF, so an unauthenticated agy exits instead of waiting 60
+    // seconds for an OAuth code that cannot arrive.
+    const auto result = process_.Run(ProcessRequest{config_.executable,
+                                                     {"-p", "/usage", "--output-format", "json"}, {},
+                                                     std::chrono::milliseconds{10000}, CancellationProbe()});
+    if (result.cancelled) throw std::runtime_error("agy /usage cancelled");
+    if (result.timedOut) throw std::runtime_error("agy /usage timed out");
+    // Diagnostics must never echo raw stdout/stderr: they may carry OAuth URLs
+    // or account details. Classification only matches bounded markers.
+    std::string lowered = result.standardOutput + "\n" + result.standardError;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    if (result.exitCode == 2 || lowered.find("gemini_api_key") != std::string::npos) {
+      throw ProviderException(ProviderError{"unsupported",
+          "Antigravity está usando GEMINI_API_KEY, sin cuotas de cuenta. Inicia sesión con Google en agy para "
+          "monitorizar las cuotas de suscripción.",
+          false, std::nullopt});
+    }
+    if (lowered.find("authentication required") != std::string::npos ||
+        lowered.find("unauthenticated") != std::string::npos ||
+        lowered.find("waiting for authentication") != std::string::npos ||
+        lowered.find("oauth") != std::string::npos ||
+        lowered.find("log in") != std::string::npos ||
+        lowered.find("login") != std::string::npos) {
+      throw ProviderException(ProviderError{"unauthorized",
+          "Antigravity (agy) no tiene una sesión iniciada. Abre agy, inicia sesión con Google y pulsa Refrescar.",
+          false, std::nullopt});
+    }
+    if (result.exitCode != 0) {
+      throw std::runtime_error(
+          "agy /usage failed; comprueba la sesión ejecutando: agy -p \"/usage\" --output-format json");
+    }
+    const auto parsed = ParseAgyUsageJson(config_, result.standardOutput, Clock::now());
+    if (!parsed.has_value()) {
+      throw ProviderException(ProviderError{"unsupported",
+          "agy /usage no devuelve un esquema de cuotas reconocible. Comprueba: agy -p \"/usage\" --output-format json.",
+          false, std::nullopt});
+    }
+    return *parsed;
+  }
+};
+
 constexpr const char* kOllamaCloudUsageUrl = "https://ollama.com/api/usage";
 
-std::optional<TimePoint> ParseOllamaUnloadTime(const std::string& text) {
-  // Ollama marshals this from a Go time.Time, so it arrives as RFC 3339 with
-  // optional fractional seconds and either "Z" or a numeric offset. Written by
-  // hand rather than with std::chrono::parse, which libstdc++ only ships from
-  // GCC 14 on and would break the Ubuntu build.
+std::optional<TimePoint> ParseRfc3339Timestamp(const std::string& text) {
+  // Shared RFC 3339 parser: Ollama marshals expires_at from a Go time.Time and
+  // agy reports quota reset_time values, both with optional fractional seconds
+  // and either "Z" or a numeric offset. Written by hand rather than with
+  // std::chrono::parse, which libstdc++ only ships from GCC 14 on and would
+  // break the Ubuntu build.
   // Fixed-width digit runs rather than scanf: the widths are exactly what RFC
   // 3339 mandates, and MSVC deprecates the scanf family under /WX anyway.
   const auto digits = [&text](std::size_t offset, std::size_t count, int& out) {
@@ -713,6 +774,87 @@ void AddCodexWindow(std::vector<Metric>& metrics, const Json& window, const std:
                            label + " restante"});
 }
 
+// agy reports fractions with binary floating noise (0.17835280299186707), so
+// percentages are rounded to two decimals and clamped into the schema range.
+std::string FormatAgyPercent(long double value) {
+  if (!std::isfinite(value)) throw std::runtime_error("agy schema: non-finite percentage");
+  if (value < 0.0L) value = 0.0L;
+  if (value > 100.0L) value = 100.0L;
+  std::ostringstream text;
+  text << std::fixed << std::setprecision(2) << static_cast<double>(value);
+  auto result = text.str();
+  while (!result.empty() && result.back() == '0') result.pop_back();
+  if (!result.empty() && result.back() == '.') result.pop_back();
+  return result.empty() ? "0" : result;
+}
+
+std::string AgyWindowFragment(const std::string& window) {
+  if (window == "weekly") return "semanal";
+  if (window == "daily") return "diaria";
+  if (window == "monthly") return "mensual";
+  if (window == "5h") return "5 h";
+  return {};
+}
+
+std::optional<std::chrono::seconds> AgyWindowDuration(const std::string& window) {
+  if (window == "weekly") return std::chrono::seconds{7 * 24 * 3600};
+  if (window == "daily") return std::chrono::seconds{24 * 3600};
+  if (window == "5h") return std::chrono::seconds{5 * 3600};
+  return std::nullopt;
+}
+
+void AddAgyBucket(std::vector<Metric>& metrics, const std::string& groupName, const Json& bucket,
+                  TimePoint observedAt) {
+  if (!bucket.is_object()) return;
+  std::optional<std::string> remaining;
+  std::optional<std::string> used;
+  try {
+    if (bucket.contains("remaining_fraction") && bucket["remaining_fraction"].is_number()) {
+      remaining = FormatAgyPercent(bucket["remaining_fraction"].get<long double>() * 100.0L);
+    }
+    if (bucket.contains("remaining_percentage") && !bucket["remaining_percentage"].is_null()) {
+      remaining = FormatAgyPercent(std::stold(NumberText(bucket["remaining_percentage"])));
+    }
+    if (bucket.contains("used_percentage") && !bucket["used_percentage"].is_null()) {
+      used = FormatAgyPercent(std::stold(NumberText(bucket["used_percentage"])));
+    }
+  } catch (const std::exception&) {
+    return;  // A bucket without readable percentages is skipped, never guessed.
+  }
+  if (!remaining.has_value() && !used.has_value()) return;
+  if (!remaining.has_value()) remaining = DecimalSubtract("100", *used);
+  if (!used.has_value()) used = DecimalSubtract("100", *remaining);
+
+  // An epoch or otherwise past reset_time means no reset is scheduled; like
+  // Ollama's elapsed unload times, it is dropped rather than shown as pending.
+  std::optional<TimePoint> reset;
+  if (bucket.contains("reset_time") && !bucket["reset_time"].is_null()) {
+    if (!bucket["reset_time"].is_string()) return;
+    const auto parsed = ParseRfc3339Timestamp(bucket["reset_time"].get<std::string>());
+    if (!parsed.has_value()) return;
+    if (*parsed > observedAt) reset = *parsed;
+  }
+
+  const std::string window =
+      bucket.contains("window") && bucket["window"].is_string() ? bucket["window"].get<std::string>() : "";
+  std::string label = groupName;
+  if (const auto fragment = AgyWindowFragment(window); !fragment.empty()) {
+    label += (label.empty() ? "" : " ") + fragment;
+  }
+  if (label.empty() && bucket.contains("name") && bucket["name"].is_string()) {
+    label = bucket["name"].get<std::string>();
+  }
+  if (label.empty() && bucket.contains("id") && bucket["id"].is_string()) {
+    label = bucket["id"].get<std::string>();
+  }
+  if (label.empty() || label.size() > 128U) return;
+  const auto duration = AgyWindowDuration(window);
+  metrics.push_back(Metric{MetricKind::UsedPercent, *used, MetricUnit::Percent, MetricScope::RollingWindow,
+                           Provenance::CliBridge, Availability::Available, reset, duration, label + " usado"});
+  metrics.push_back(Metric{MetricKind::RemainingPercent, *remaining, MetricUnit::Percent, MetricScope::RollingWindow,
+                           Provenance::Derived, Availability::Available, reset, duration, label + " restante"});
+}
+
 }  // namespace
 
 ProviderSnapshot ParseCodexResponses(const ProviderConfig& config, const std::string& jsonLines, TimePoint observedAt) {
@@ -846,6 +988,50 @@ std::optional<ProviderSnapshot> ParseClaudeUsageText(
                                       MetricScope::RollingWindow, Provenance::Derived, Availability::Available,
                                       reset, std::nullopt, label + " restante"});
   }
+  if (snapshot.metrics.empty()) return std::nullopt;
+  return snapshot;
+}
+
+std::optional<ProviderSnapshot> ParseAgyUsageJson(
+    const ProviderConfig& config, const std::string& json, TimePoint observedAt) {
+  Json root;
+  try { root = Json::parse(json); } catch (...) { return std::nullopt; }
+  if (!root.is_object()) return std::nullopt;
+  // The observed envelope wraps the payload as command.data; an envelope for a
+  // different slash command is not quota data. Bare groups/buckets layouts are
+  // accepted defensively because the binary has shipped both names.
+  const Json* data = nullptr;
+  if (root.contains("command") && !root["command"].is_null()) {
+    if (!root["command"].is_object()) return std::nullopt;
+    const auto& command = root["command"];
+    if (command.contains("name") && command["name"].is_string() &&
+        command["name"].get<std::string>() != "usage") {
+      return std::nullopt;
+    }
+    if (command.contains("data") && command["data"].is_object()) data = &command["data"];
+  }
+  if (data == nullptr &&
+      (root.contains("groups") || root.contains("buckets") || root.contains("quota_buckets"))) {
+    data = &root;
+  }
+  if (data == nullptr) return std::nullopt;
+
+  auto snapshot = BaseSnapshot(config, observedAt);
+  const auto addBuckets = [&](const std::string& groupName, const Json& buckets) {
+    if (!buckets.is_array()) return;
+    for (const auto& bucket : buckets) AddAgyBucket(snapshot.metrics, groupName, bucket, observedAt);
+  };
+  if (data->contains("groups") && (*data)["groups"].is_array()) {
+    for (const auto& group : (*data)["groups"]) {
+      if (!group.is_object()) continue;
+      const std::string groupName =
+          group.contains("name") && group["name"].is_string() ? group["name"].get<std::string>() : "";
+      if (group.contains("buckets")) addBuckets(groupName, group["buckets"]);
+      if (group.contains("quota_buckets")) addBuckets(groupName, group["quota_buckets"]);
+    }
+  }
+  if (data->contains("buckets")) addBuckets("", (*data)["buckets"]);
+  if (data->contains("quota_buckets")) addBuckets("", (*data)["quota_buckets"]);
   if (snapshot.metrics.empty()) return std::nullopt;
   return snapshot;
 }
@@ -1002,7 +1188,7 @@ ProviderSnapshot ParseOllamaStatus(
         if (!model["expires_at"].is_string()) {
           throw std::runtime_error("Ollama schema: expires_at must be a string");
         }
-        const auto unload = ParseOllamaUnloadTime(model["expires_at"].get<std::string>());
+        const auto unload = ParseRfc3339Timestamp(model["expires_at"].get<std::string>());
         if (!unload.has_value()) throw std::runtime_error("Ollama schema: invalid unload timestamp");
         if (*unload > observedAt) memory.resetsAt = *unload;
       }
@@ -1021,6 +1207,8 @@ std::unique_ptr<IUsageProvider> CreateProvider(
       return std::make_unique<CodexProvider>(std::move(config), http, process, secrets);
     case ProviderKind::ClaudeSubscription:
       return std::make_unique<ClaudeSubscriptionProvider>(std::move(config), http, process, secrets);
+    case ProviderKind::Agy:
+      return std::make_unique<AgyProvider>(std::move(config), http, process, secrets);
     case ProviderKind::DeepSeek:
       return std::make_unique<DeepSeekProvider>(std::move(config), http, process, secrets);
     case ProviderKind::OpenAiCompatible:

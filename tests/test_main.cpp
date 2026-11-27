@@ -479,6 +479,70 @@ void TestClaudeAuthentication() {
   }
 }
 
+void TestAgyParser() {
+  ProviderConfig config{"agy", "Antigravity", ProviderKind::Agy, true};
+  // A fixed observation point well before the fixture reset times keeps the
+  // resetsAt expectations stable regardless of when the suite runs.
+  const auto past = Clock::from_time_t(1546300800);  // 2019-01-01T00:00:00Z
+  const auto usage = ParseAgyUsageJson(config, ReadFixture("agy_usage.json"), past);
+  CHECK(usage.has_value());
+  if (!usage.has_value()) return;
+  CHECK(usage->health == Health::Healthy);
+  CHECK(usage->kind == ProviderKind::Agy);
+  CHECK(usage->metrics.size() == 6U);
+  // Gemini Models weekly bucket: remaining_fraction 0.17835280299186707.
+  CHECK(usage->metrics[0].kind == MetricKind::UsedPercent);
+  CHECK(usage->metrics[0].value == "82.16");
+  CHECK(usage->metrics[0].provenance == Provenance::CliBridge);
+  CHECK(usage->metrics[0].label == "Gemini Models semanal usado");
+  CHECK(usage->metrics[0].window == std::chrono::seconds{7 * 24 * 3600});
+  CHECK(usage->metrics[1].kind == MetricKind::RemainingPercent);
+  CHECK(usage->metrics[1].value == "17.84");
+  CHECK(usage->metrics[1].provenance == Provenance::Derived);
+  CHECK(usage->metrics[1].label == "Gemini Models semanal restante");
+  CHECK(usage->metrics[0].resetsAt.has_value());
+  CHECK(usage->metrics[1].resetsAt == usage->metrics[0].resetsAt);
+  const auto reset = Clock::to_time_t(*usage->metrics[0].resetsAt);
+  std::tm utc{};
+#ifdef _WIN32
+  CHECK(gmtime_s(&utc, &reset) == 0);
+#else
+  CHECK(gmtime_r(&reset, &utc) != nullptr);
+#endif
+  CHECK(utc.tm_year == 2026 - 1900 && utc.tm_mon == 11 && utc.tm_mday == 4);
+  CHECK(utc.tm_hour == 13 && utc.tm_min == 10 && utc.tm_sec == 1);
+  // Full buckets report 0 used / 100 remaining; the epoch reset_time sentinel
+  // is dropped rather than shown as a pending reset.
+  CHECK(usage->metrics[2].value == "0");
+  CHECK(usage->metrics[3].value == "100");
+  CHECK(usage->metrics[2].label == "Claude and GPT models semanal usado");
+  CHECK(!usage->metrics[2].resetsAt.has_value());
+  CHECK(usage->metrics[4].label == "Claude and GPT models 5 h usado");
+  CHECK(usage->metrics[4].window == std::chrono::seconds{5 * 3600});
+  CHECK(usage->metrics[5].label == "Claude and GPT models 5 h restante");
+  CHECK(ValidateSnapshot(*usage).valid);
+
+  // A used-only payload derives the complementary remaining metric.
+  const auto usedOnly = ParseAgyUsageJson(
+      config, R"({"buckets":[{"id":"b","used_percentage":25,"reset_time":"2027-01-01T00:00:00Z"}]})", past);
+  CHECK(usedOnly.has_value());
+  if (usedOnly.has_value()) {
+    CHECK(usedOnly->metrics.size() == 2U);
+    CHECK(usedOnly->metrics[0].value == "25");
+    CHECK(usedOnly->metrics[1].value == "75");
+    CHECK(usedOnly->metrics[0].resetsAt.has_value());
+  }
+  // Unrecognized payloads yield no snapshot instead of guessed metrics.
+  for (const auto& rejected : {std::string{"ordinary model response"}, std::string{"not json"},
+                               std::string{R"({"status":"SUCCESS"})"},
+                               std::string{R"({"command":{"name":"model","data":{}}})"},
+                               std::string{R"({"groups":[{"name":"g","buckets":[{"id":"b"}]}]})"},
+                               std::string{R"({"buckets":[{"id":"b","remaining_fraction":"a lot"}]})"},
+                               std::string{R"({"buckets":[{"id":"b","used_percentage":25,"reset_time":"soon"}]})"}}) {
+    CHECK(!ParseAgyUsageJson(config, rejected, past).has_value());
+  }
+}
+
 void TestGenericParser() {
   ProviderConfig config{"generic", "Generic", ProviderKind::OpenAiCompatible, true};
   config.jsonPointers = {{"total_tokens", "/usage/total_tokens"}, {"used_percent", "/usage/used_percent"},
@@ -657,7 +721,7 @@ void TestProviderKindDefaults() {
   // type's endpoint: the defaults of the two kinds share no values.
   CHECK(ollama.baseUrl != deepseek.baseUrl);
   for (const auto kind : {ProviderKind::Codex, ProviderKind::ClaudeSubscription,
-                          ProviderKind::OpenAiCompatible}) {
+                          ProviderKind::Agy, ProviderKind::OpenAiCompatible}) {
     const auto defaults = DefaultsForKind(kind);
     CHECK(defaults.baseUrl.empty());
     CHECK(defaults.balancePath.empty());
@@ -899,6 +963,61 @@ void TestOllamaSettingsAndCache() {
     legacy << R"({"schemaVersion":1,"snapshots":[]})";
   }
   CHECK(LoadCache(paths).empty());
+
+  std::error_code cleanup;
+  std::filesystem::remove_all(root, cleanup);
+}
+
+void TestAgySettingsAndCache() {
+  const auto root = std::filesystem::temp_directory_path() /
+                    ("ai-usage-agy-test-" + std::to_string(Clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(root);
+  const DataPaths paths{root, root / "settings.json", root / "cache.json", true};
+  ProviderConfig provider{"agy", "Antigravity", ProviderKind::Agy, true, "agy"};
+  Settings settings;
+  settings.providers.push_back(provider);
+  SaveSettings(paths, settings);
+  const auto restored = LoadSettings(paths).settings;
+  CHECK(restored.providers.size() == 1U);
+  CHECK(restored.providers[0].kind == ProviderKind::Agy);
+  CHECK(restored.providers[0].executable == std::filesystem::path("agy"));
+  CHECK(restored.providers[0].baseUrl.empty());
+  CHECK(RedactedSettingsJson(restored).find("\"agy\"") != std::string::npos);
+
+  // The portable executable reference collapses a discovered absolute path.
+  const auto discovered = std::filesystem::path(R"(/home/example/.local/bin/agy)");
+  CHECK(MakeExecutableReferencePortable("agy", discovered, discovered) == std::filesystem::path("agy"));
+
+  const auto past = Clock::from_time_t(1546300800);  // 2019-01-01T00:00:00Z
+  const auto parsed = ParseAgyUsageJson(provider, ReadFixture("agy_usage.json"), past);
+  CHECK(parsed.has_value());
+  if (!parsed.has_value()) return;
+  SaveCache(paths, {*parsed});
+  const auto cache = LoadCache(paths);
+  CHECK(cache.size() == 1U);
+  CHECK(cache[0].kind == ProviderKind::Agy);
+  CHECK(cache[0].metrics.size() == 6U);
+  CHECK(cache[0].metrics[0].kind == MetricKind::UsedPercent);
+  CHECK(cache[0].metrics[0].value == "82.16");
+  CHECK(cache[0].metrics[0].provenance == Provenance::CliBridge);
+  CHECK(cache[0].metrics[0].resetsAt == parsed->metrics[0].resetsAt);
+  CHECK(cache[0].metrics[1].kind == MetricKind::RemainingPercent);
+  CHECK(cache[0].metrics[1].value == "17.84");
+  CHECK(ValidateSnapshot(cache[0]).valid);
+
+  // The normalized snapshot flows through the generic presentation layers:
+  // tray tooltip, minimal overlay rows, and reset metadata rendering.
+  const auto tooltip = ComposeTooltip({*parsed}, past, 127);
+  CHECK(tooltip.find("Antigravity") != std::string::npos);
+  CHECK(tooltip.find("82.16%") != std::string::npos);
+  const auto overlay = ProjectOverlayRows({*parsed}, past, 8);
+  CHECK(overlay.rows.size() == 3U);
+  CHECK(overlay.rows[0].providerName == "Antigravity");
+  CHECK(overlay.rows[0].usedPercent.has_value());
+  CHECK(overlay.rows[0].resetText.find("reinicia en") != std::string::npos);
+  const auto resetText = FormatResetMetadata(parsed->metrics[0], past);
+  CHECK(resetText.starts_with("Reinicia "));
+  CHECK(resetText.find("reinicia en") != std::string::npos);
 
   std::error_code cleanup;
   std::filesystem::remove_all(root, cleanup);
@@ -1263,6 +1382,94 @@ void TestGeminiProvider() {
   CHECK(ToString(ProviderKind::Gemini) == "gemini");
 }
 
+void TestAgyProvider() {
+  FakeHttp http;
+  FakeSecrets secrets;
+  ProviderConfig config{"agy", "Antigravity", ProviderKind::Agy, true};
+  config.executable = "agy";
+
+  FakeProcess process;
+  process.result = ProcessResult{0, ReadFixture("agy_usage.json"), {}, false};
+  auto provider = CreateProvider(config, http, process, secrets);
+  const auto snapshot = provider->Refresh();
+  CHECK(snapshot.health == Health::Healthy);
+  CHECK(snapshot.metrics.size() == 6U);
+  CHECK(process.requests.size() == 1U);
+  CHECK(process.last.arguments == std::vector<std::string>({"-p", "/usage", "--output-format", "json"}));
+  CHECK(process.last.standardInput.empty());
+  CHECK(process.last.standardInputCloseDelay == std::chrono::milliseconds{0});
+  CHECK(process.last.timeout == std::chrono::milliseconds{10000});
+
+  const std::string secret = "private-account-data";
+  auto expectError = [&](ProcessResult result, const std::string& code, const std::string& message) {
+    FakeProcess failing;
+    failing.result = std::move(result);
+    auto rejected = CreateProvider(config, http, failing, secrets);
+    bool caught = false;
+    try { (void)rejected->Refresh(); }
+    catch (const ProviderException& error) {
+      caught = true;
+      CHECK(error.Error().code == code);
+      CHECK(!error.Error().transient);
+      CHECK(error.Error().message.find(message) != std::string::npos);
+      CHECK(error.Error().message.find(secret) == std::string::npos);
+      CHECK(error.Error().message.find("accounts.google.com") == std::string::npos);
+    }
+    CHECK(caught);
+    CHECK(failing.requests.size() == 1U);
+  };
+  // Unauthenticated sessions print an OAuth prompt; diagnostics stay secret-free.
+  ProcessResult unauthenticated{1, ReadFixture("agy_unauthenticated.txt"), secret, false};
+  expectError(unauthenticated, "unauthorized", "inicia sesión");
+  // GEMINI_API_KEY mode has no account quota and exits with status 2.
+  expectError({2, ReadFixture("agy_api_key.txt"), {}, false}, "unsupported", "GEMINI_API_KEY");
+  expectError({2, {}, secret, false}, "unsupported", "GEMINI_API_KEY");
+  // Unrecognized output never becomes invented quota values.
+  expectError({0, "ordinary model response", secret, false}, "unsupported", "esquema de cuotas");
+
+  FakeProcess timedOut;
+  timedOut.result = ProcessResult{-1, {}, secret, true, false};
+  auto timedOutProvider = CreateProvider(config, http, timedOut, secrets);
+  bool timedOutRejected = false;
+  try { (void)timedOutProvider->Refresh(); }
+  catch (const std::exception& error) {
+    timedOutRejected = true;
+    CHECK(std::string(error.what()).find("timed out") != std::string::npos);
+    CHECK(std::string(error.what()).find(secret) == std::string::npos);
+  }
+  CHECK(timedOutRejected);
+
+  FakeProcess cancelled;
+  cancelled.result = ProcessResult{-1, {}, secret, false, true};
+  auto cancelledProvider = CreateProvider(config, http, cancelled, secrets);
+  bool cancelledRejected = false;
+  try { (void)cancelledProvider->Refresh(); }
+  catch (const std::exception& error) {
+    cancelledRejected = true;
+    CHECK(std::string(error.what()).find("cancelled") != std::string::npos);
+    CHECK(std::string(error.what()).find(secret) == std::string::npos);
+  }
+  CHECK(cancelledRejected);
+
+  FakeProcess failed;
+  failed.result = ProcessResult{1, {}, secret, false};
+  auto failedProvider = CreateProvider(config, http, failed, secrets);
+  bool failedRejected = false;
+  try { (void)failedProvider->Refresh(); }
+  catch (const std::exception& error) {
+    failedRejected = true;
+    CHECK(std::string(error.what()).find(secret) == std::string::npos);
+  }
+  CHECK(failedRejected);
+
+  process.result = ProcessResult{0, ReadFixture("agy_usage.json"), {}, false};
+  const auto test = provider->TestConnection();
+  CHECK(test.success);
+  CHECK(test.capabilities.usage);
+  CHECK(test.capabilities.remaining);
+  CHECK(ToString(ProviderKind::Agy) == "agy");
+}
+
 void TestTooltip() {
   const auto now = Clock::now();
   ProviderSnapshot snapshot{"codex", "Codex", ProviderKind::Codex, now - std::chrono::minutes{3}, Freshness::Fresh, Health::Healthy};
@@ -1577,6 +1784,27 @@ int main(int argc, char** argv) {
       return 3;
     }
   }
+  if (argc == 2 && std::string(argv[1]) == "--probe-agy-usage") {
+    const auto executable = DiscoverExecutable("agy");
+    if (!executable.has_value()) {
+      std::cerr << "agy executable not found\n";
+      return 2;
+    }
+    auto runner = CreatePlatformProcessRunner();
+    ProviderConfig config{"agy-probe", "Antigravity", ProviderKind::Agy, true};
+    config.executable = *executable;
+    FakeHttp http;
+    FakeSecrets secrets;
+    auto provider = CreateProvider(config, http, *runner, secrets);
+    try {
+      const auto snapshot = provider->Refresh();
+      std::cout << "usage-compatible=yes metrics=" << snapshot.metrics.size() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cout << "usage-compatible=no diagnostic=" << error.what() << '\n';
+      return 3;
+    }
+  }
   if (argc == 2 && std::string(argv[1]) == "--probe-claude-usage") {
     const auto executable = DiscoverExecutable("claude");
     if (!executable.has_value()) {
@@ -1608,6 +1836,8 @@ int main(int argc, char** argv) {
       {"codex", "fixture", TestCodexParser}, {"deepseek", "fixture", TestDeepSeekParser},
       {"claude", "fixture", TestClaudeParser}, {"claude-bridge", "fixture", TestClaudeBridge},
       {"claude-authentication", "fixture", TestClaudeAuthentication},
+      {"agy", "fixture", TestAgyParser}, {"agy-provider", "fixture", TestAgyProvider},
+      {"agy-settings", "unit", TestAgySettingsAndCache},
       {"claude-tz", "unit", TestClaudeParserCrossTimezone}, {"claude-nozone", "unit", TestClaudeParserNoZone},
       {"generic", "fixture", TestGenericParser}, {"ollama", "fixture", TestOllamaParser},
       {"ollama-provider", "fixture", TestOllamaProvider}, {"settings", "unit", TestSettingsAndCache},

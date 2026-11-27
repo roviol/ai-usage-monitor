@@ -65,6 +65,7 @@ std::vector<ProviderSnapshot> UiFixtureSnapshots() {
 std::optional<std::string> DefaultExecutableCommand(ProviderKind kind) {
   if (kind == ProviderKind::Codex) return "codex";
   if (kind == ProviderKind::ClaudeSubscription) return "claude";
+  if (kind == ProviderKind::Agy) return "agy";
   return std::nullopt;
 }
 
@@ -195,6 +196,9 @@ void MonitorApp::EnsureDefaults() {
   }
   if (const auto claude = DiscoverExecutable("claude"); claude.has_value()) {
     settings_.providers.push_back(ProviderConfig{"claude", "Claude", ProviderKind::ClaudeSubscription, true, "claude"});
+  }
+  if (const auto agy = DiscoverExecutable("agy"); agy.has_value()) {
+    settings_.providers.push_back(ProviderConfig{"agy", "Antigravity", ProviderKind::Agy, true, "agy"});
   }
   ProviderConfig deepSeek;
   deepSeek.id = "deepseek";
