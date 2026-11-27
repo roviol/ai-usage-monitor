@@ -1,0 +1,16 @@
+{
+  "alwaysOnTop": false,
+  "overlay": {
+    "corner": "top-right",
+    "enabled": false,
+    "locked": true,
+    "margin": 12,
+    "monitor": "",
+    "opacity": 78,
+    "suppressFullscreen": false,
+    "visible": true
+  },
+  "providers": [],
+  "refreshMinutes": 5,
+  "schemaVersion": 1
+}

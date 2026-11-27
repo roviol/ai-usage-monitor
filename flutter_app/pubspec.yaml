@@ -1,0 +1,38 @@
+name: ai_usage_monitor
+description: "AI Usage Monitor — Flutter desktop application (Windows + Linux)."
+publish_to: 'none'
+
+version: 0.1.1+1
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # System tray icon and menu (Windows/Linux).
+  tray_manager: ^0.2.3
+  # Frameless always-on-top overlay window, skip-taskbar, opacity.
+  window_manager: ^0.4.3
+  # Monitor/screen enumeration for overlay placement.
+  screen_retriever: ^0.2.0
+  # Global hotkey registration (Windows Ctrl+Alt+U overlay recovery).
+  hotkey_manager: ^0.2.3
+  # Win32 FFI for overlay window styles, DPAPI and single-instance mutex.
+  win32: ^5.5.0
+  # FFI runtime support used by the win32 bindings.
+  ffi: ^2.1.0
+  # Tray menu item model exposed by tray_manager.
+  menu_base: ^0.1.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
