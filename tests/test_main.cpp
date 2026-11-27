@@ -1592,23 +1592,25 @@ void TestResetMetadataFormatting() {
 
 // The card stamp must read the same clock the user's system shows: the same
 // reset rendered at two process timezones yields stamps that match each
-// zone's local rendering of one absolute instant.
+// zone's local rendering of one absolute instant. Fixed-offset POSIX rules
+// keep the expectations deterministic on every CRT (the DST-aware databases
+// differ between glibc and the UCRT).
 void TestResetMetadataLocalZone() {
   const auto reset = TimePoint{std::chrono::seconds{1785942000}};  // 15:00 UTC
   Metric used{MetricKind::UsedPercent, "42", MetricUnit::Percent, MetricScope::RollingWindow};
   used.resetsAt = reset;
   const auto now = TimePoint{std::chrono::seconds{1785942000 - 60}};
-  SetAmbientZoneForTest("America/New_York");
-  const auto newYorkText = FormatResetMetadata(used, now);
-  SetAmbientZoneForTest("Europe/Madrid");
-  const auto madridText = FormatResetMetadata(used, now);
+  SetAmbientZoneForTest("EST5");
+  const auto westText = FormatResetMetadata(used, now);
+  SetAmbientZoneForTest("CET-1");
+  const auto eastText = FormatResetMetadata(used, now);
   ClearAmbientZoneForTest();
-  // 15:00 UTC is 11:00 in New York (EDT) and 17:00 in Madrid (CEST).
-  CHECK(newYorkText.starts_with("Reinicia 2026-08-05 11:00:00"));
-  CHECK(madridText.starts_with("Reinicia 2026-08-05 17:00:00"));
+  // 15:00 UTC is 10:00 at fixed UTC-5 and 16:00 at fixed UTC+1.
+  CHECK(westText.starts_with("Reinicia 2026-08-05 10:00:00"));
+  CHECK(eastText.starts_with("Reinicia 2026-08-05 16:00:00"));
   // Both are the same instant, so both show the same countdown.
-  CHECK(newYorkText.find("reinicia en 1m") != std::string::npos);
-  CHECK(madridText.find("reinicia en 1m") != std::string::npos);
+  CHECK(westText.find("reinicia en 1m") != std::string::npos);
+  CHECK(eastText.find("reinicia en 1m") != std::string::npos);
 }
 
 void TestSchedulerConcurrencyAndCoalescing() {
