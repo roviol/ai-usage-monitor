@@ -48,15 +48,16 @@ std::string ReadFixture(const std::string& name) {
 }
 
 // Sets the process timezone for a test. The MSVC CRT only understands POSIX
-// TZ rules, so on Windows the IANA name is translated; unknown names are
-// passed through untouched.
+// TZ names (it rejects the start/end rule suffix and applies its built-in
+// US DST schedule), so on Windows the IANA name is translated; unknown
+// names are passed through untouched.
 void SetAmbientZoneForTest(const std::string& ianaZone) {
 #ifdef _WIN32
   static const std::unordered_map<std::string, std::string> rules{
       {"UTC", "UTC0"},
-      {"America/New_York", "EST5EDT,M3.2.0/2,M11.1.0/2"},
+      {"America/New_York", "EST5EDT"},
       {"America/Santo_Domingo", "AST4"},
-      {"Europe/Madrid", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
+      {"Europe/Madrid", "CET-1CEST"},
   };
   const auto found = rules.find(ianaZone);
   _putenv_s("TZ", found != rules.end() ? found->second.c_str() : ianaZone.c_str());

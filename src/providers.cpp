@@ -116,23 +116,26 @@ std::optional<int> MonthIndex(std::string month) {
 // threads are only affected for those microseconds, and the previous value is
 // always restored.
 #ifdef _WIN32
-// The MSVC CRT only understands POSIX TZ rules, not IANA zone names: an
-// unrecognized name silently falls back to UTC. Translate the zones the app
-// is known to handle so wall-clock conversions still land on the right
-// instant; unknown names keep the previous fallback behavior.
+// The MSVC CRT only understands POSIX TZ names, not IANA zone names: an
+// unrecognized name silently falls back to UTC. It also rejects the POSIX
+// start/end rule suffix (",M3.2.0/2,..."), applying its built-in US DST
+// schedule whenever a DST name is present, so transition dates for non-US
+// zones are only approximate. Translate the zones the app is known to
+// handle so wall-clock conversions land on the right instant; unknown
+// names keep the previous fallback behavior.
 const std::unordered_map<std::string, std::string>& WindowsTzRules() {
   static const std::unordered_map<std::string, std::string> rules{
       {"UTC", "UTC0"},
       {"Etc/UTC", "UTC0"},
-      {"America/New_York", "EST5EDT,M3.2.0/2,M11.1.0/2"},
-      {"America/Chicago", "CST6CDT,M3.2.0/2,M11.1.0/2"},
-      {"America/Denver", "MST7MDT,M3.2.0/2,M11.1.0/2"},
-      {"America/Los_Angeles", "PST8PDT,M3.2.0/2,M11.1.0/2"},
+      {"America/New_York", "EST5EDT"},
+      {"America/Chicago", "CST6CDT"},
+      {"America/Denver", "MST7MDT"},
+      {"America/Los_Angeles", "PST8PDT"},
       {"America/Santo_Domingo", "AST4"},
-      {"Europe/London", "GMT0BST,M3.5.0/1,M10.5.0/2"},
-      {"Europe/Madrid", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
-      {"Europe/Paris", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
-      {"Europe/Berlin", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
+      {"Europe/London", "GMT0BST"},
+      {"Europe/Madrid", "CET-1CEST"},
+      {"Europe/Paris", "CET-1CEST"},
+      {"Europe/Berlin", "CET-1CEST"},
   };
   return rules;
 }
